@@ -8,3 +8,8 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Docs and Local DB
+
+doc/
+qdrant_data/
