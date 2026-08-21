@@ -13,3 +13,4 @@ wheels/
 
 doc/
 qdrant_data/
+sqlite_db/

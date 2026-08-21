@@ -5,8 +5,12 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
+    "langchain>=0.3.30",
+    "langchain-community>=0.3.31",
+    "langchain-text-splitters>=0.3.11",
     "numpy>=2.0.2",
     "ollama>=0.6.2",
+    "pypdf>=6.16.1",
     "qdrant-client>=1.16.1",
     "sentence-transformers>=5.1.2",
     "torch>=2.8.0",
