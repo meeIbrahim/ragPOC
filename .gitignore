@@ -9,8 +9,16 @@ wheels/
 # Virtual environments
 .venv
 
-# Docs and Local DB
+# Ignore gRPC generated files
+src/generated/*_pb2.py
+src/generated/*_pb2.pyi
+src/generated/*_pb2_grpc.py
+src/generated/**/*_pb2.py
+src/generated/**/*_pb2.pyi
+src/generated/**/*_pb2_grpc.py
 
+# Docs and Local DB
 doc/
+ingestion_docs/
 qdrant_data/
 sqlite_db/
