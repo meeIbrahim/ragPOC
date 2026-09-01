@@ -73,7 +73,7 @@ Python RAG service (long-running worker, XREADGROUP consumer)
   │     - already indexed → XACK, skip
   │  9. GetObject(object_path) from MinIO
   │  10. load_pdf_chunks() → embed() per chunk (existing code, reused as-is)
-  │  11. Qdrant upsert, point id = f"{hash_id}:{chunk_id}"
+  │  11. Qdrant upsert, point id = uuid5(f"{hash_id}:{chunk_id}") (deterministic)
   │      payload: {hash_id, chunk_id, object_path, source_filename}
   │  12. INSERT indexed_documents(hash_id, object_path, chunk_count, indexed_at)
   │  13. XACK
@@ -138,8 +138,12 @@ Go HTTP endpoints and MinIO (for the upload itself).
   ```
   (Supersedes the currently-unwired `ingestion_storage` table — same intent,
   actually wired up this time.)
-- Point ID scheme changes from the current UUIDv5-from-namespace scheme to
-  `f"{hash_id}:{chunk_id}"`, deterministic and matching the stated requirement.
+- Point ID stays a deterministic UUIDv5 derived from `f"{hash_id}:{chunk_id}"`
+  (Qdrant point IDs must be an unsigned integer or UUID — a raw
+  `"{hash_id}:{chunk_id}"` string is rejected at upsert). `hash_id` and
+  `chunk_id` are carried as explicit payload fields instead, which is what
+  satisfies "chunk addressable by hash_id+chunk_id" in practice — payload is
+  what gets filtered/read, not the opaque point id.
 - Qdrant client switches from embedded (`path=...`) to networked
   (`url=...`) — collection creation logic in `qdrant_collection_v1.py` (HNSW
   params: `m=4, ef_construct=100, full_scan_threshold=1`) is unchanged, only the
