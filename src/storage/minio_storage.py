@@ -16,3 +16,15 @@ _client = Minio(
     _SECRET_KEY,
     secure=False
 )
+
+
+def get_client() -> Minio:
+    return _client
+
+
+def initialize_bucket(bucket: str) -> None:
+    if _client.bucket_exists(bucket):
+        _logger.info("Bucket %s already exists", bucket)
+        return
+    _logger.info("Creating bucket %s", bucket)
+    _client.make_bucket(bucket)
