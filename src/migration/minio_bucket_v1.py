@@ -1,8 +1,9 @@
+import logging
+
 from core import config_reader
-from huggingface_hub.utils import logging
 from storage import minio_storage
 
-logger = logging.get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 class MinioCreateBucket:

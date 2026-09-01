@@ -1,11 +1,9 @@
-
-
 import logging
 
+from core import qdrant_manager
 from migration.minio_bucket_v1 import MinioCreateBucket
 from migration.qdrant_collection_v1 import QdrantCollection
 from migration.sqlite_create_table_v1 import CreateSqLiteTables
-
 
 logging.basicConfig(
     level=logging.INFO,
@@ -32,6 +30,8 @@ def main():
     ]
     for migration in migrations:
         run_migrations(migration)
+
+    qdrant_manager.get_client().close()
 
 if __name__ == "__main__":
     main()

@@ -1,7 +1,4 @@
-
-
 import logging
-
 import ollama
 from qdrant_client.models import Distance, HnswConfigDiff, VectorParams
 

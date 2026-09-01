@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from core import utils
 from migration.sqlite_create_table_v1 import CreateSqLiteTables
 from migration.qdrant_collection_v1 import QdrantCollection
