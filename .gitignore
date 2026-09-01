@@ -22,3 +22,7 @@ doc/
 ingestion_docs/
 qdrant_data/
 sqlite_db/
+go_sqlite_db/
+
+# Worktrees
+.worktrees/
