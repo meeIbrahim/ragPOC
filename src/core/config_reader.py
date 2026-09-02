@@ -22,7 +22,7 @@ class SqliteConfig:
 
 @dataclass(frozen=True)
 class QdrantConfig:
-    dir: str
+    url: str
 
 
 @dataclass(frozen=True)
@@ -37,12 +37,21 @@ class RagConfig:
 
 
 @dataclass(frozen=True)
+class RedisConfig:
+    host: str
+    port: int
+    stream: str
+    consumer_group: str
+
+
+@dataclass(frozen=True)
 class Config:
     minio: MinioConfig
     sqlite: SqliteConfig
     qdrant: QdrantConfig
     server: ServerConfig
     rag: RagConfig
+    redis: RedisConfig
 
 
 def _load_config() -> Config:
@@ -57,7 +66,8 @@ def _load_config() -> Config:
         sqlite=SqliteConfig(**data["sqlite"]),
         qdrant=QdrantConfig(**data["qdrant"]),
         server=ServerConfig(**data["server"]),
-        rag=RagConfig(**data["rag"])
+        rag=RagConfig(**data["rag"]),
+        redis=RedisConfig(**data["redis"]),
     )
 
 
