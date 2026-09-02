@@ -51,3 +51,38 @@ func TestInsertGetAndOutboxSweep(t *testing.T) {
 		t.Fatalf("UnpublishedHashes after publish = %+v, want none", unpublished)
 	}
 }
+
+func TestInsertIfAbsent(t *testing.T) {
+	conn, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer conn.Close()
+
+	inserted, err := InsertIfAbsent(conn, "abc123", "objects/abc.pdf")
+	if err != nil {
+		t.Fatalf("InsertIfAbsent (first): %v", err)
+	}
+	if !inserted {
+		t.Fatalf("InsertIfAbsent (first) = false, want true for a new hash")
+	}
+
+	doc, err := GetByHash(conn, "abc123")
+	if err != nil || doc == nil {
+		t.Fatalf("GetByHash after InsertIfAbsent: doc=%+v err=%v", doc, err)
+	}
+
+	inserted, err = InsertIfAbsent(conn, "abc123", "objects/dup.pdf")
+	if err != nil {
+		t.Fatalf("InsertIfAbsent (duplicate): %v", err)
+	}
+	if inserted {
+		t.Fatalf("InsertIfAbsent (duplicate) = true, want false for an existing hash")
+	}
+
+	// The original row must be untouched by the losing insert attempt.
+	doc, err = GetByHash(conn, "abc123")
+	if err != nil || doc == nil || doc.ObjectPath != "objects/abc.pdf" {
+		t.Fatalf("GetByHash after duplicate InsertIfAbsent = %+v, err=%v, want unchanged object_path=objects/abc.pdf", doc, err)
+	}
+}

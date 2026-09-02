@@ -36,6 +36,25 @@ func Insert(conn *sql.DB, hashID, objectPath string) error {
 	return err
 }
 
+// InsertIfAbsent inserts a new document row unless hash_id already exists.
+// Returns true if the row was newly inserted, false if it already existed.
+func InsertIfAbsent(conn *sql.DB, hashID, objectPath string) (bool, error) {
+	result, err := conn.Exec(
+		`INSERT INTO documents (hash_id, object_path, status, confirmed_at)
+		 VALUES (?, ?, 'uploaded', ?)
+		 ON CONFLICT(hash_id) DO NOTHING`,
+		hashID, objectPath, time.Now().UTC(),
+	)
+	if err != nil {
+		return false, err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return rows > 0, nil
+}
+
 func MarkPublished(conn *sql.DB, hashID string) error {
 	_, err := conn.Exec(`UPDATE documents SET published_at = ? WHERE hash_id = ?`, time.Now().UTC(), hashID)
 	return err

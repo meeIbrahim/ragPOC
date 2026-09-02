@@ -73,18 +73,13 @@ func (h *IngestHandler) Confirm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	existing, err := db.GetByHash(h.DB, hashID)
+	inserted, err := db.InsertIfAbsent(h.DB, hashID, req.ObjectPath)
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	if existing != nil {
+	if !inserted {
 		writeJSON(w, http.StatusConflict, confirmResponse{HashID: hashID, Status: "duplicate"})
-		return
-	}
-
-	if err := db.Insert(h.DB, hashID, req.ObjectPath); err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 
