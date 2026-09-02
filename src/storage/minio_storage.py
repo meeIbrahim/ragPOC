@@ -1,4 +1,7 @@
 import logging
+import os
+import tempfile
+from pathlib import Path
 
 from minio import Minio
 from core import config_reader
@@ -28,3 +31,11 @@ def initialize_bucket(bucket: str) -> None:
         return
     _logger.info("Creating bucket %s", bucket)
     _client.make_bucket(bucket)
+
+
+def download_to_tempfile(object_path: str) -> Path:
+    suffix = Path(object_path).suffix or ".pdf"
+    fd, tmp_path = tempfile.mkstemp(suffix=suffix)
+    os.close(fd)
+    _client.fget_object(_BUCKET, object_path, tmp_path)
+    return Path(tmp_path)
