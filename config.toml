@@ -8,7 +8,7 @@ bucket="rag-pdf-source"
 dir="./sqlite_db"
 
 [qdrant]
-url="localhost:6333"
+url="http://localhost:6333"
 
 [server]
 port=50051
