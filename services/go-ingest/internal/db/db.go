@@ -10,10 +10,8 @@ import (
 
 func Open(path string) (*sql.DB, error) {
 	if path != ":memory:" {
-		if dir := filepath.Dir(path); dir != "" {
-			if err := os.MkdirAll(dir, 0o755); err != nil {
-				return nil, err
-			}
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return nil, err
 		}
 	}
 
@@ -21,6 +19,12 @@ func Open(path string) (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Serialize all access through a single connection. This registry is a
+	// single-writer store at this scale, and SetMaxOpenConns(1) both avoids
+	// SQLITE_BUSY collisions between the outbox poller and confirm handlers
+	// and sidesteps the classic ":memory:" footgun where each pooled
+	// connection would otherwise see its own fresh, empty database.
+	conn.SetMaxOpenConns(1)
 	if _, err := conn.Exec(`
 		CREATE TABLE IF NOT EXISTS documents (
 			hash_id      TEXT PRIMARY KEY,
