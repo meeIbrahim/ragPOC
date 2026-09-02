@@ -1,3 +1,4 @@
+import logging
 import uuid
 
 from qdrant_client.models import PointStruct
@@ -6,6 +7,8 @@ from core import config_reader, qdrant_manager
 from db.queries import indexed_documents
 from rag import chunking, embeddings
 from storage import minio_storage
+
+logger = logging.getLogger(__name__)
 
 POINT_ID_NAMESPACE = uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
 
@@ -18,7 +21,7 @@ def ingest_document(hash_id: str, object_path: str) -> int | None:
     collection = config_reader.get_config().rag.collection
 
     if indexed_documents.get_by_hash(collection, hash_id) is not None:
-        print(f"Skipping already-indexed document: {hash_id}")
+        logger.info("Skipping already-indexed document: %s", hash_id)
         return None
 
     local_path = minio_storage.download_to_tempfile(object_path)
@@ -42,7 +45,7 @@ def ingest_document(hash_id: str, object_path: str) -> int | None:
 
         qdrant_manager.get_client().upsert(collection_name=collection, points=points)
         indexed_documents.save_indexed(collection, hash_id, object_path, len(points))
-        print(f"Indexed {len(points)} chunks: {hash_id}")
+        logger.info("Indexed %d chunks: %s", len(points), hash_id)
         return len(points)
     finally:
         local_path.unlink(missing_ok=True)
