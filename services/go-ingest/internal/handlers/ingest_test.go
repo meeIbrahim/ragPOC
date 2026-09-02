@@ -10,10 +10,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/minio/minio-go/v7"
+
 	"ragingest/internal/db"
 )
 
-var errObjectNotFound = errors.New("object not found")
+var errObjectNotFound = minio.ErrorResponse{Code: "NoSuchKey", Message: "The specified key does not exist."}
+
+var errStorageUnavailable = errors.New("connection refused")
 
 type fakeStore struct {
 	hash string
@@ -107,6 +111,23 @@ func TestConfirmReturns404WhenObjectMissing(t *testing.T) {
 	}
 	if pub.calls != 0 {
 		t.Fatalf("publisher should not be called when object is missing, got %d calls", pub.calls)
+	}
+}
+
+func TestConfirmReturns502OnStorageFailure(t *testing.T) {
+	pub := &fakePublisher{}
+	h := newTestHandler(t, &fakeStore{err: errStorageUnavailable}, pub)
+
+	req := httptest.NewRequest(http.MethodPost, "/ingest/confirm", bytes.NewBufferString(`{"object_path":"objects/abc.pdf"}`))
+	rec := httptest.NewRecorder()
+
+	h.Confirm(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 for a non-NoSuchKey storage error", rec.Code)
+	}
+	if pub.calls != 0 {
+		t.Fatalf("publisher should not be called on storage failure, got %d calls", pub.calls)
 	}
 }
 

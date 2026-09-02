@@ -4,10 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"log"
 	"net/http"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/minio/minio-go/v7"
 
 	"ragingest/internal/db"
 	"ragingest/internal/storage"
@@ -44,6 +46,7 @@ func (h *IngestHandler) Init(w http.ResponseWriter, r *http.Request) {
 
 	url, fields, err := h.Storage.PresignedUploadPolicy(r.Context(), objectKey, 15*time.Minute)
 	if err != nil {
+		log.Printf("handlers: Init: PresignedUploadPolicy failed for %s: %v", objectKey, err)
 		http.Error(w, "failed to create upload url", http.StatusInternalServerError)
 		return
 	}
@@ -69,12 +72,19 @@ func (h *IngestHandler) Confirm(w http.ResponseWriter, r *http.Request) {
 
 	hashID, err := h.Storage.HashObject(r.Context(), req.ObjectPath)
 	if err != nil {
-		http.Error(w, "object not found", http.StatusNotFound)
+		if minio.ToErrorResponse(err).Code == "NoSuchKey" {
+			log.Printf("handlers: Confirm: object not found: %s: %v", req.ObjectPath, err)
+			http.Error(w, "object not found", http.StatusNotFound)
+			return
+		}
+		log.Printf("handlers: Confirm: HashObject storage failure for %s: %v", req.ObjectPath, err)
+		http.Error(w, "storage error", http.StatusBadGateway)
 		return
 	}
 
 	inserted, err := db.InsertIfAbsent(h.DB, hashID, req.ObjectPath)
 	if err != nil {
+		log.Printf("handlers: Confirm: InsertIfAbsent failed for hash %s: %v", hashID, err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -89,7 +99,11 @@ func (h *IngestHandler) Confirm(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
 	if err := h.Publisher.Publish(ctx, hashID, req.ObjectPath, "application/pdf"); err == nil {
-		_ = db.MarkPublished(h.DB, hashID)
+		if err := db.MarkPublished(h.DB, hashID); err != nil {
+			log.Printf("handlers: Confirm: MarkPublished failed for hash %s: %v", hashID, err)
+		}
+	} else {
+		log.Printf("handlers: Confirm: publish failed for hash %s, deferring to outbox poller: %v", hashID, err)
 	}
 
 	writeJSON(w, http.StatusOK, confirmResponse{HashID: hashID, Status: "uploaded"})
