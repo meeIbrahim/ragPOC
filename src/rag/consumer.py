@@ -34,6 +34,19 @@ def run() -> None:
     _ensure_group(client, redis_config.stream, redis_config.consumer_group)
 
     logger.info("Consumer started: stream=%s group=%s", redis_config.stream, redis_config.consumer_group)
+
+    # Reclaim and reprocess this consumer's own pending entries from a prior crash
+    # before serving new messages — XREADGROUP with ">" never returns these.
+    pending = client.xreadgroup(
+        redis_config.consumer_group,
+        CONSUMER_NAME,
+        {redis_config.stream: "0"},
+        count=100,
+    )
+    for _stream_name, messages in pending:
+        for message_id, fields in messages:
+            _handle(client, redis_config, message_id, fields)
+
     while True:
         entries = client.xreadgroup(
             redis_config.consumer_group,
