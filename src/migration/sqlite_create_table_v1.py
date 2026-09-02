@@ -11,27 +11,16 @@ class CreateSqLiteTables:
         collection = config_reader.get_config().rag.collection
         db_dir = config_reader.get_config().sqlite.dir
         db = SQLiteManager(collection, db_dir)
-        self._collection_table(db)
-        self._storage_table(db)
+        self._indexed_documents_table(db)
 
-    def _storage_table(self, db_manager: SQLiteManager):
-        logger.info("Initializing ingestion_storage table")
+    def _indexed_documents_table(self, db_manager: SQLiteManager):
+        logger.info("Initializing indexed_documents table")
         with db_manager as conn:
             conn.execute("""
-                CREATE TABLE IF NOT EXISTS ingestion_storage (
-                document_hash TEXT PRIMARY KEY NOT NULL,
-                object_path TEXT NOT NULL UNIQUE
-                )
-                """)
-
-    def _collection_table(self, db_manager: SQLiteManager):
-        logger.info("Initializing documents table")
-        with db_manager as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS documents (
-                    document_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    path TEXT NOT NULL UNIQUE,
-                    sha256 TEXT NOT NULL,
+                CREATE TABLE IF NOT EXISTS indexed_documents (
+                    hash_id TEXT PRIMARY KEY NOT NULL,
+                    object_path TEXT NOT NULL,
+                    chunk_count INTEGER NOT NULL,
                     indexed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
+                )
                 """)
