@@ -30,7 +30,7 @@ class QdrantCollection:
                 hnsw_config=HnswConfigDiff(
                     m=4,
                     ef_construct=100,
-                    full_scan_threshold=1
+                    full_scan_threshold=10
                 )
             )
             logger.info("Collection %s created", collection)
