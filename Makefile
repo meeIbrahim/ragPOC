@@ -1,4 +1,5 @@
-.PHONY: generate run_migrations run up down
+.PHONY: generate run_migrations run_worker up down
+
 # gRPC
 generate:
 	uv run python -m grpc_tools.protoc \
@@ -12,8 +13,8 @@ run_migrations: up
 	uv run src/migration/main.py
 	docker compose down
 
-run:
-	uv run src/rag/pipeline.py
+run_worker:
+	uv run python -m rag.consumer
 
 up:
 	docker compose up -d
