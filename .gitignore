@@ -10,12 +10,12 @@ wheels/
 .venv
 
 # Ignore gRPC generated files
-src/generated/*_pb2.py
-src/generated/*_pb2.pyi
-src/generated/*_pb2_grpc.py
-src/generated/**/*_pb2.py
-src/generated/**/*_pb2.pyi
-src/generated/**/*_pb2_grpc.py
+**/generated/*_pb2.py
+**/generated/*_pb2.pyi
+**/generated/*_pb2_grpc.py
+**/generated/**/*_pb2.py
+**/generated/**/*_pb2.pyi
+**/generated/**/*_pb2_grpc.py
 
 # Docs and Local DB
 doc/

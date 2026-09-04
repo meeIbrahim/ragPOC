@@ -1,12 +1,12 @@
-.PHONY: generate run_migrations run_worker up down
+.PHONY: grpc-generate run_migrations run_worker up down
 
 # gRPC
-generate:
+grpc-generate:
 	uv run python -m grpc_tools.protoc \
 		-I./protos \
-		--python_out=./src/generated \
-		--pyi_out=./src/generated \
-		--grpc_python_out=./src/generated \
+		--python_out=./services/rag-service/src/generated \
+		--pyi_out=./services/rag-service/src/generated \
+		--grpc_python_out=./services/rag-service/src/generated \
 		./protos/rag/v1/rag.proto
 
 run_migrations: up
