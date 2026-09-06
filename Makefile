@@ -1,4 +1,4 @@
-.PHONY: grpc-generate run_migrations run_worker up down
+.PHONY: grpc-generate run_migrations run_worker up down go_migrate go_migrate_down
 
 # gRPC
 grpc-generate:
@@ -15,6 +15,14 @@ run_migrations: up
 
 run_worker:
 	uv run python -m rag.consumer
+
+go_migrate:
+	go build -C services/center -o ../../bin/migrate ./migrations
+	./bin/migrate -config=config.toml
+
+go_migrate_down:
+	go build -C services/center -o ../../bin/migrate ./migrations
+	./bin/migrate -config=config.toml -down
 
 up:
 	docker compose up -d
