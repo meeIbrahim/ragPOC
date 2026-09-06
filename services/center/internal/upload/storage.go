@@ -2,7 +2,7 @@ package upload
 
 import "time"
 
-type DocumentIngestion struct {
+type DocumentStorage struct {
 	ContentHash string
 	ObjectPath  string
 	FileName    string

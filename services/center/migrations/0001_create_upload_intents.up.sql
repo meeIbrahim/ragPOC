@@ -1,7 +1,7 @@
 CREATE TABLE IF NOT EXISTS upload_intents (
     id           TEXT PRIMARY KEY NOT NULL,
     file_name    TEXT NOT NULL,
-    object_path  TEXT NOT NULL,
+    object_path  TEXT,
     created_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     expires_at   TIMESTAMP NOT NULL,
     completed_at TIMESTAMP,

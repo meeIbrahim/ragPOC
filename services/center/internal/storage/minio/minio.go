@@ -3,6 +3,8 @@ package minio
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/url"
@@ -81,6 +83,30 @@ func (c *Client) MigrateToIngestion(ctx context.Context, uploadObjectName, sha25
 	}
 
 	return destKey, nil
+}
+
+// HashUploadObject streams objectName from the upload bucket, returning its sha256 hex digest and size.
+func (c *Client) HashUploadObject(ctx context.Context, objectName string) (string, int64, error) {
+	obj, err := c.inner.GetObject(ctx, c.uploadBucket, objectName, miniogo.GetObjectOptions{})
+	if err != nil {
+		return "", 0, fmt.Errorf("minio: get %s: %w", objectName, err)
+	}
+	defer obj.Close()
+
+	h := sha256.New()
+	size, err := io.Copy(h, obj)
+	if err != nil {
+		return "", 0, fmt.Errorf("minio: hash %s: %w", objectName, err)
+	}
+	return hex.EncodeToString(h.Sum(nil)), size, nil
+}
+
+// RemoveFromUploadBucket deletes objectName from the upload bucket.
+func (c *Client) RemoveFromUploadBucket(ctx context.Context, objectName string) error {
+	if err := c.inner.RemoveObject(ctx, c.uploadBucket, objectName, miniogo.RemoveObjectOptions{}); err != nil {
+		return fmt.Errorf("minio: remove %s: %w", objectName, err)
+	}
+	return nil
 }
 
 // ExistsInUploadBucket reports whether objectName exists in the upload bucket.

@@ -1,6 +1,8 @@
 package upload
 
-import "time"
+import (
+	"time"
+)
 
 type State int
 
@@ -35,7 +37,7 @@ func (s State) String() string {
 type Intent struct {
 	ID          string
 	FileName    string
-	ObjectPath  string
+	ObjectPath  *string
 	CreatedAt   time.Time
 	ExpiresAt   time.Time
 	CompletedAt *time.Time
