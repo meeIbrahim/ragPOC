@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS upload_intent (
     retries          INTEGER NOT NULL DEFAULT 0,
     created_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     expires_at       TIMESTAMP NOT NULL,
-    completed_at     TIMESTAMP
+    uploaded_at      TIMESTAMP
 );
 
 -- hash worker: oldest UPLOADED first

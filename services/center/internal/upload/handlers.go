@@ -30,10 +30,10 @@ type UploadDocumentResponse struct {
 }
 
 type ConfirmUploadResponse struct {
-	ID          string     `json:"id"`
-	FileName    string     `json:"filename"`
-	Status      string     `json:"status"`
-	CompletedAt *time.Time `json:"completed_at,omitempty"`
+	ID         string     `json:"id"`
+	FileName   string     `json:"filename"`
+	Status     string     `json:"status"`
+	UploadedAt *time.Time `json:"uploaded_at,omitempty"`
 }
 
 func (h *Handlers) CreateUpload(w http.ResponseWriter, r *http.Request) {
@@ -75,7 +75,14 @@ func (h *Handlers) ConfirmUpload(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrIntentExpired):
-			http.Error(w, "upload intent expired", http.StatusConflict)
+			http.Error(w, "upload intent expired", http.StatusGone)
+		case errors.Is(err, ErrIntentFailed):
+			http.Error(w, "upload intent failed", http.StatusConflict)
+		case errors.Is(err, ErrIntentNotFound):
+			http.Error(w, "upload intent not found", http.StatusNotFound)
+		case errors.Is(err, ErrIntentUnknown):
+			h.logger.Error("confirm upload failed", "id", id, "err", err)
+			http.Error(w, "upload intent in unknown state", http.StatusInternalServerError)
 		default:
 			h.logger.Error("confirm upload failed", "id", id, "err", err)
 			http.Error(w, "internal error", http.StatusInternalServerError)
@@ -83,11 +90,11 @@ func (h *Handlers) ConfirmUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, ConfirmUploadResponse{
-		ID:          intent.ID,
-		FileName:    intent.FileName,
-		Status:      intent.Status.String(),
-		CompletedAt: intent.CompletedAt,
+	writeJSON(w, http.StatusAccepted, ConfirmUploadResponse{
+		ID:         intent.ID,
+		FileName:   intent.FileName,
+		Status:     intent.Status.String(),
+		UploadedAt: intent.UploadedAt,
 	})
 }
 

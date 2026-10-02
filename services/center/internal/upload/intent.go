@@ -44,8 +44,9 @@ type Intent struct {
 	ID             string
 	FileName       string
 	TempBucketPath *string
+	Hash           *string
 	CreatedAt      time.Time
 	ExpiresAt      time.Time
-	CompletedAt    *time.Time
+	UploadedAt     *time.Time
 	Status         State
 }

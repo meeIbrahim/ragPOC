@@ -15,7 +15,10 @@ import (
 type IntentRepository interface {
 	CreateIntent(ctx context.Context, i *Intent) error
 	GetIntent(ctx context.Context, id string) (*Intent, error)
-	UpdateIntentStatus(ctx context.Context, id string, status State, completedAt *time.Time) error
+	UpdateIntentToUploaded(ctx context.Context, id string, uploadedAt *time.Time) (int64, error)
+	UpdateIntentToHashed(ctx context.Context, id string, hash *string, claimedBy *string) (int64, error)
+	UpdateIntentToHashing(ctx context.Context, id string, claimedBy *string, claimedAt *time.Time) (int64, error)
+	UpdateIntentToExpired(ctx context.Context, id string, now *time.Time) (int64, error)
 }
 
 type DocumentRepository interface {
@@ -40,6 +43,7 @@ func NewService(repo Repository, minio *minio.Client, logger *slog.Logger) *Serv
 
 func (s *Service) CreateIntent(ctx context.Context, fileName string) (*Intent, *url.URL, error) {
 	expirationDuration := 2 * time.Hour
+	now := time.Now()
 	id := uuid.NewString()
 	objectPath := id
 
@@ -50,10 +54,11 @@ func (s *Service) CreateIntent(ctx context.Context, fileName string) (*Intent, *
 	intent := &Intent{
 		ID:             id,
 		FileName:       fileName,
+		Hash:           nil,
 		TempBucketPath: &objectPath,
-		CreatedAt:      time.Now(),
-		ExpiresAt:      time.Now().Add(expirationDuration),
-		CompletedAt:    nil,
+		CreatedAt:      now,
+		ExpiresAt:      now.Add(expirationDuration),
+		UploadedAt:     nil,
 		Status:         StateWaiting,
 	}
 
@@ -73,78 +78,57 @@ func (s *Service) Get(ctx context.Context, id string) (*Intent, error) {
 
 // ErrIntentExpired is returned by ConfirmUpload when the intent's presigned URL has expired.
 var ErrIntentExpired = errors.New("upload intent expired")
+var ErrIntentFailed = errors.New("upload intent failed")
+var ErrIntentNotFound = errors.New("upload intent not found")
+var ErrIntentUnknown = errors.New("upload intent in unknown state")
 
-// NOTE: still the old synchronous flow; milestone 2 replaces it with the atomic
-// WAITING -> UPLOADED gate plus an async hash worker.
-//
-// ConfirmUpload hashes the uploaded object, checks it against the document store, and
-// either migrates it into the ingestion bucket or discards it as a duplicate. It is
-// idempotent: calling it again on an already-completed or already-duplicate intent
-// just returns the intent unchanged.
 func (s *Service) ConfirmUpload(ctx context.Context, id string) (*Intent, error) {
+	now := time.Now()
+	rows, err := s.repo.UpdateIntentToUploaded(ctx, id, &now)
+	if err != nil {
+		return nil, fmt.Errorf("update upload_intent to uploaded: %w", err)
+	}
+	if rows == 0 {
+		return s.resolveLostGate(ctx, id, now)
+	}
 	intent, err := s.repo.GetIntent(ctx, id)
 	if err != nil {
+		if errors.Is(err, ErrIntentNotFound) {
+			return nil, err
+		}
 		return nil, fmt.Errorf("get upload_intent: %w", err)
 	}
-
-	switch intent.Status {
-	case StateHashed:
-		return intent, nil
-	case StateExpired, StateFailed:
-		return nil, fmt.Errorf("upload intent %s is in terminal state %s", id, intent.Status)
-	}
-
-	if time.Now().After(intent.ExpiresAt) {
-		if err := s.repo.UpdateIntentStatus(ctx, id, StateExpired, nil); err != nil {
-			s.logger.Error("mark upload_intent expired failed", "id", id, "err", err)
-		}
-		return nil, ErrIntentExpired
-	}
-
-	objectPath := *intent.TempBucketPath
-	hash, size, err := s.minio.HashUploadObject(ctx, objectPath)
-	if err != nil {
-		return nil, fmt.Errorf("hash uploaded object: %w", err)
-	}
-
-	now := time.Now()
-
-	existing, err := s.repo.GetDocumentByHash(ctx, hash)
-	if err != nil {
-		return nil, fmt.Errorf("check existing document: %w", err)
-	}
-	if existing != nil {
-		if err := s.minio.RemoveFromUploadBucket(ctx, objectPath); err != nil {
-			return nil, fmt.Errorf("remove duplicate object: %w", err)
-		}
-		if err := s.repo.UpdateIntentStatus(ctx, id, StateHashed, &now); err != nil {
-			return nil, fmt.Errorf("mark upload_intent duplicate: %w", err)
-		}
-		intent.Status = StateHashed
-		intent.CompletedAt = &now
-		return intent, nil
-	}
-
-	destPath, err := s.minio.MigrateToIngestion(ctx, objectPath, hash)
-	if err != nil {
-		return nil, fmt.Errorf("migrate to ingestion bucket: %w", err)
-	}
-	doc := &DocumentStorage{
-		Hash:           hash,
-		PermBucketPath: destPath,
-		FileName:       intent.FileName,
-		Size:           size,
-		Status:         DocumentProcessing,
-		CreatedAt:      now,
-		UpdatedAt:      now,
-	}
-	if err := s.repo.CreateDocument(ctx, doc); err != nil {
-		return nil, fmt.Errorf("create document: %w", err)
-	}
-	if err := s.repo.UpdateIntentStatus(ctx, id, StateHashed, &now); err != nil {
-		return nil, fmt.Errorf("mark upload_intent completed: %w", err)
-	}
-	intent.Status = StateHashed
-	intent.CompletedAt = &now
+	intent.Status = StateUploaded
+	intent.UploadedAt = &now
 	return intent, nil
+}
+
+func (s *Service) resolveLostGate(ctx context.Context, id string, now time.Time) (*Intent, error) {
+	intent, err := s.repo.GetIntent(ctx, id)
+	if err != nil {
+		if errors.Is(err, ErrIntentNotFound) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("get upload_intent: %w", err)
+	}
+	switch intent.Status {
+	case StateExpired:
+		return intent, ErrIntentExpired
+	case StateUnknown:
+		return intent, ErrIntentUnknown
+	case StateHashed, StateHashing, StateUploaded:
+		return intent, nil
+	case StateFailed:
+		return intent, ErrIntentFailed
+	default:
+		rows, err := s.repo.UpdateIntentToExpired(ctx, id, &now)
+		if err != nil {
+			return nil, fmt.Errorf("update upload_intent to expired: %w", err)
+		}
+		if rows == 0 {
+			return s.resolveLostGate(ctx, id, now)
+		}
+		intent.Status = StateExpired
+		return intent, ErrIntentExpired
+	}
 }
