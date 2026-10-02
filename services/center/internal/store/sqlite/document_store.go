@@ -18,11 +18,11 @@ func NewDocumentStore(db *sql.DB) *DocumentStore {
 
 func (s *DocumentStore) GetDocumentByHash(ctx context.Context, hash string) (*upload.DocumentStorage, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT content_hash, object_path, file_name, created_at, size FROM documents WHERE content_hash = ?`,
+		`SELECT hash, perm_bucket_path, file_name, size, status, retries, created_at, updated_at FROM document_store WHERE hash = ?`,
 		hash)
 
 	var d upload.DocumentStorage
-	if err := row.Scan(&d.ContentHash, &d.ObjectPath, &d.FileName, &d.CreatedAt, &d.Size); err != nil {
+	if err := row.Scan(&d.Hash, &d.PermBucketPath, &d.FileName, &d.Size, &d.Status, &d.Retries, &d.CreatedAt, &d.UpdatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -33,8 +33,8 @@ func (s *DocumentStore) GetDocumentByHash(ctx context.Context, hash string) (*up
 
 func (s *DocumentStore) CreateDocument(ctx context.Context, d *upload.DocumentStorage) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO documents (content_hash, object_path, file_name, created_at, size) VALUES (?,?,?,?,?)`,
-		d.ContentHash, d.ObjectPath, d.FileName, d.CreatedAt, d.Size)
+		`INSERT INTO document_store (hash, perm_bucket_path, file_name, size, status, retries, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)`,
+		d.Hash, d.PermBucketPath, d.FileName, d.Size, d.Status, d.Retries, d.CreatedAt, d.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("insert document: %w", err)
 	}

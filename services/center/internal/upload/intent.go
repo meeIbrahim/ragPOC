@@ -10,36 +10,42 @@ const (
 	StateUnknown State = iota
 	StateWaiting
 	StateUploaded
-	StateProcessing
-	StateCompleted
-	StateDuplicate
-	StateFailed
+	StateHashing
+	StateHashed
 	StateExpired
-	StateVerificationFailed
+	StateFailed
 )
 
 var stateName = map[State]string{
-	StateUnknown:            "unknown",
-	StateWaiting:            "waiting",
-	StateUploaded:           "uploaded",
-	StateProcessing:         "processing",
-	StateCompleted:          "completed",
-	StateDuplicate:          "duplicate",
-	StateFailed:             "failed",
-	StateExpired:            "expired",
-	StateVerificationFailed: "verification_failed",
+	StateUnknown:  "UNKNOWN",
+	StateWaiting:  "WAITING",
+	StateUploaded: "UPLOADED",
+	StateHashing:  "HASHING",
+	StateHashed:   "HASHED",
+	StateExpired:  "EXPIRED",
+	StateFailed:   "FAILED",
 }
 
 func (s State) String() string {
 	return stateName[s]
 }
 
+// StateFromString maps a stored status back to its State, or StateUnknown.
+func StateFromString(name string) State {
+	for state, n := range stateName {
+		if n == name {
+			return state
+		}
+	}
+	return StateUnknown
+}
+
 type Intent struct {
-	ID          string
-	FileName    string
-	ObjectPath  *string
-	CreatedAt   time.Time
-	ExpiresAt   time.Time
-	CompletedAt *time.Time
-	Status      State
+	ID             string
+	FileName       string
+	TempBucketPath *string
+	CreatedAt      time.Time
+	ExpiresAt      time.Time
+	CompletedAt    *time.Time
+	Status         State
 }

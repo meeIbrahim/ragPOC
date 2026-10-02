@@ -48,13 +48,13 @@ func (s *Service) CreateIntent(ctx context.Context, fileName string) (*Intent, *
 		return nil, nil, fmt.Errorf("failed to create url: %v", err)
 	}
 	intent := &Intent{
-		ID:          id,
-		FileName:    fileName,
-		ObjectPath:  &objectPath,
-		CreatedAt:   time.Now(),
-		ExpiresAt:   time.Now().Add(expirationDuration),
-		CompletedAt: nil,
-		Status:      StateWaiting,
+		ID:             id,
+		FileName:       fileName,
+		TempBucketPath: &objectPath,
+		CreatedAt:      time.Now(),
+		ExpiresAt:      time.Now().Add(expirationDuration),
+		CompletedAt:    nil,
+		Status:         StateWaiting,
 	}
 
 	if err := s.repo.CreateIntent(ctx, intent); err != nil {
@@ -74,6 +74,9 @@ func (s *Service) Get(ctx context.Context, id string) (*Intent, error) {
 // ErrIntentExpired is returned by ConfirmUpload when the intent's presigned URL has expired.
 var ErrIntentExpired = errors.New("upload intent expired")
 
+// NOTE: still the old synchronous flow; milestone 2 replaces it with the atomic
+// WAITING -> UPLOADED gate plus an async hash worker.
+//
 // ConfirmUpload hashes the uploaded object, checks it against the document store, and
 // either migrates it into the ingestion bucket or discards it as a duplicate. It is
 // idempotent: calling it again on an already-completed or already-duplicate intent
@@ -85,9 +88,9 @@ func (s *Service) ConfirmUpload(ctx context.Context, id string) (*Intent, error)
 	}
 
 	switch intent.Status {
-	case StateCompleted, StateDuplicate:
+	case StateHashed:
 		return intent, nil
-	case StateExpired, StateFailed, StateVerificationFailed:
+	case StateExpired, StateFailed:
 		return nil, fmt.Errorf("upload intent %s is in terminal state %s", id, intent.Status)
 	}
 
@@ -98,7 +101,7 @@ func (s *Service) ConfirmUpload(ctx context.Context, id string) (*Intent, error)
 		return nil, ErrIntentExpired
 	}
 
-	objectPath := *intent.ObjectPath
+	objectPath := *intent.TempBucketPath
 	hash, size, err := s.minio.HashUploadObject(ctx, objectPath)
 	if err != nil {
 		return nil, fmt.Errorf("hash uploaded object: %w", err)
@@ -114,10 +117,10 @@ func (s *Service) ConfirmUpload(ctx context.Context, id string) (*Intent, error)
 		if err := s.minio.RemoveFromUploadBucket(ctx, objectPath); err != nil {
 			return nil, fmt.Errorf("remove duplicate object: %w", err)
 		}
-		if err := s.repo.UpdateIntentStatus(ctx, id, StateDuplicate, &now); err != nil {
+		if err := s.repo.UpdateIntentStatus(ctx, id, StateHashed, &now); err != nil {
 			return nil, fmt.Errorf("mark upload_intent duplicate: %w", err)
 		}
-		intent.Status = StateDuplicate
+		intent.Status = StateHashed
 		intent.CompletedAt = &now
 		return intent, nil
 	}
@@ -127,19 +130,21 @@ func (s *Service) ConfirmUpload(ctx context.Context, id string) (*Intent, error)
 		return nil, fmt.Errorf("migrate to ingestion bucket: %w", err)
 	}
 	doc := &DocumentStorage{
-		ContentHash: hash,
-		ObjectPath:  destPath,
-		FileName:    intent.FileName,
-		CreatedAt:   now,
-		Size:        size,
+		Hash:           hash,
+		PermBucketPath: destPath,
+		FileName:       intent.FileName,
+		Size:           size,
+		Status:         DocumentProcessing,
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	}
 	if err := s.repo.CreateDocument(ctx, doc); err != nil {
 		return nil, fmt.Errorf("create document: %w", err)
 	}
-	if err := s.repo.UpdateIntentStatus(ctx, id, StateCompleted, &now); err != nil {
+	if err := s.repo.UpdateIntentStatus(ctx, id, StateHashed, &now); err != nil {
 		return nil, fmt.Errorf("mark upload_intent completed: %w", err)
 	}
-	intent.Status = StateCompleted
+	intent.Status = StateHashed
 	intent.CompletedAt = &now
 	return intent, nil
 }
