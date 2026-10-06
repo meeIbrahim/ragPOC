@@ -14,7 +14,7 @@ func Open(cfg *config.Config) (*sql.DB, error) {
 	if path == "" {
 		return nil, fmt.Errorf("Empty DB Path")
 	}
-	db, err := sql.Open("sqlite", path+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
+	db, err := sql.Open("sqlite", path+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_time_format=sqlite")
 	if err != nil {
 		return nil, err
 	}

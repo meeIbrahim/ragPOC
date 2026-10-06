@@ -1,7 +1,7 @@
 package upload
 
 import (
-	"center-service/internal/storage/minio"
+	"center-service/internal/domain"
 	"context"
 	"errors"
 	"fmt"
@@ -12,46 +12,42 @@ import (
 	"github.com/google/uuid"
 )
 
-type IntentRepository interface {
-	CreateIntent(ctx context.Context, i *Intent) error
-	GetIntent(ctx context.Context, id string) (*Intent, error)
+type IntentStore interface {
+	CreateIntent(ctx context.Context, i *domain.Intent) error
+	GetIntent(ctx context.Context, id string) (*domain.Intent, error)
 	UpdateIntentToUploaded(ctx context.Context, id string, uploadedAt *time.Time) (int64, error)
-	UpdateIntentToHashed(ctx context.Context, id string, hash *string, claimedBy *string) (int64, error)
-	UpdateIntentToHashing(ctx context.Context, id string, claimedBy *string, claimedAt *time.Time) (int64, error)
 	UpdateIntentToExpired(ctx context.Context, id string, now *time.Time) (int64, error)
 }
 
-type DocumentRepository interface {
-	GetDocumentByHash(ctx context.Context, hash string) (*DocumentStorage, error)
-	CreateDocument(ctx context.Context, d *DocumentStorage) error
+type Store interface {
+	IntentStore
 }
 
-type Repository interface {
-	IntentRepository
-	DocumentRepository
+type Blob interface {
+	PresignedUploadURL(ctx context.Context, objectPath string, expirationDuration time.Duration) (*url.URL, error)
 }
 
 type Service struct {
-	repo   Repository
-	minio  *minio.Client
-	logger *slog.Logger
+	repo    Store
+	storage Blob
+	logger  *slog.Logger
 }
 
-func NewService(repo Repository, minio *minio.Client, logger *slog.Logger) *Service {
-	return &Service{repo: repo, minio: minio, logger: logger}
+func NewService(repo Store, storage Blob, logger *slog.Logger) *Service {
+	return &Service{repo: repo, storage: storage, logger: logger}
 }
 
-func (s *Service) CreateIntent(ctx context.Context, fileName string) (*Intent, *url.URL, error) {
+func (s *Service) CreateIntent(ctx context.Context, fileName string) (*domain.Intent, *url.URL, error) {
 	expirationDuration := 2 * time.Hour
-	now := time.Now()
+	now := time.Now().UTC()
 	id := uuid.NewString()
 	objectPath := id
 
-	uploadURL, err := s.minio.PresignedUploadURL(ctx, objectPath, expirationDuration)
+	uploadURL, err := s.storage.PresignedUploadURL(ctx, objectPath, expirationDuration)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create url: %v", err)
 	}
-	intent := &Intent{
+	intent := &domain.Intent{
 		ID:             id,
 		FileName:       fileName,
 		Hash:           nil,
@@ -59,7 +55,7 @@ func (s *Service) CreateIntent(ctx context.Context, fileName string) (*Intent, *
 		CreatedAt:      now,
 		ExpiresAt:      now.Add(expirationDuration),
 		UploadedAt:     nil,
-		Status:         StateWaiting,
+		Status:         domain.IntentWaiting,
 	}
 
 	if err := s.repo.CreateIntent(ctx, intent); err != nil {
@@ -68,7 +64,7 @@ func (s *Service) CreateIntent(ctx context.Context, fileName string) (*Intent, *
 	return intent, uploadURL, nil
 }
 
-func (s *Service) Get(ctx context.Context, id string) (*Intent, error) {
+func (s *Service) Get(ctx context.Context, id string) (*domain.Intent, error) {
 	intent, err := s.repo.GetIntent(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("get upload_intent: %w", err)
@@ -82,8 +78,8 @@ var ErrIntentFailed = errors.New("upload intent failed")
 var ErrIntentNotFound = errors.New("upload intent not found")
 var ErrIntentUnknown = errors.New("upload intent in unknown state")
 
-func (s *Service) ConfirmUpload(ctx context.Context, id string) (*Intent, error) {
-	now := time.Now()
+func (s *Service) ConfirmUpload(ctx context.Context, id string) (*domain.Intent, error) {
+	now := time.Now().UTC()
 	rows, err := s.repo.UpdateIntentToUploaded(ctx, id, &now)
 	if err != nil {
 		return nil, fmt.Errorf("update upload_intent to uploaded: %w", err)
@@ -98,12 +94,12 @@ func (s *Service) ConfirmUpload(ctx context.Context, id string) (*Intent, error)
 		}
 		return nil, fmt.Errorf("get upload_intent: %w", err)
 	}
-	intent.Status = StateUploaded
+	intent.Status = domain.IntentUploaded
 	intent.UploadedAt = &now
 	return intent, nil
 }
 
-func (s *Service) resolveLostGate(ctx context.Context, id string, now time.Time) (*Intent, error) {
+func (s *Service) resolveLostGate(ctx context.Context, id string, now time.Time) (*domain.Intent, error) {
 	intent, err := s.repo.GetIntent(ctx, id)
 	if err != nil {
 		if errors.Is(err, ErrIntentNotFound) {
@@ -112,13 +108,13 @@ func (s *Service) resolveLostGate(ctx context.Context, id string, now time.Time)
 		return nil, fmt.Errorf("get upload_intent: %w", err)
 	}
 	switch intent.Status {
-	case StateExpired:
+	case domain.IntentExpired:
 		return intent, ErrIntentExpired
-	case StateUnknown:
+	case domain.IntentUnknown:
 		return intent, ErrIntentUnknown
-	case StateHashed, StateHashing, StateUploaded:
+	case domain.IntentHashed, domain.IntentHashing, domain.IntentUploaded:
 		return intent, nil
-	case StateFailed:
+	case domain.IntentFailed:
 		return intent, ErrIntentFailed
 	default:
 		rows, err := s.repo.UpdateIntentToExpired(ctx, id, &now)
@@ -128,7 +124,7 @@ func (s *Service) resolveLostGate(ctx context.Context, id string, now time.Time)
 		if rows == 0 {
 			return s.resolveLostGate(ctx, id, now)
 		}
-		intent.Status = StateExpired
+		intent.Status = domain.IntentExpired
 		return intent, ErrIntentExpired
 	}
 }

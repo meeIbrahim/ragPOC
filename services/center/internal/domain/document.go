@@ -1,4 +1,4 @@
-package upload
+package domain
 
 import "time"
 
@@ -10,7 +10,7 @@ const (
 	DocumentFailed     DocumentStatus = "FAILED"
 )
 
-type DocumentStorage struct {
+type Document struct {
 	Hash           string
 	PermBucketPath string
 	FileName       string
