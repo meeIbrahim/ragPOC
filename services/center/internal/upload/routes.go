@@ -8,5 +8,6 @@ func (h *Handlers) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /", h.CreateUpload)
 	mux.HandleFunc("POST /{id}/confirm", h.ConfirmUpload)
+	mux.HandleFunc("GET /{id}", h.GetUploadStatus)
 	return mux
 }

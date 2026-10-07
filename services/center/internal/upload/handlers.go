@@ -36,6 +36,13 @@ type ConfirmUploadResponse struct {
 	UploadedAt *time.Time `json:"uploaded_at,omitempty"`
 }
 
+type UploadStatusResponse struct {
+	ID         string     `json:"id"`
+	FileName   string     `json:"filename"`
+	Status     string     `json:"status"`
+	UploadedAt *time.Time `json:"uploaded_at,omitempty"`
+}
+
 func (h *Handlers) CreateUpload(w http.ResponseWriter, r *http.Request) {
 	var req UploadDocumentRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -65,6 +72,7 @@ func (h *Handlers) CreateUpload(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handlers) ConfirmUpload(w http.ResponseWriter, r *http.Request) {
+
 	id := r.PathValue("id")
 	if id == "" {
 		http.Error(w, "id is required", http.StatusBadRequest)
@@ -96,6 +104,36 @@ func (h *Handlers) ConfirmUpload(w http.ResponseWriter, r *http.Request) {
 		Status:     intent.Status.String(),
 		UploadedAt: intent.UploadedAt,
 	})
+}
+
+func (h *Handlers) GetUploadStatus(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		http.Error(w, "id is required", http.StatusBadRequest)
+		return
+	}
+	intent, status, err := h.svc.GetUploadStatus(r.Context(), id)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrIntentNotFound):
+			http.Error(w, "upload intent not found", http.StatusNotFound)
+		case errors.Is(err, ErrIntentUnknown):
+			h.logger.Error("get upload status failed", "id", id, "err", err)
+			http.Error(w, "upload intent in unknown state", http.StatusInternalServerError)
+		default:
+			h.logger.Error("get upload status failed", "id", id, "err", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+		}
+		return
+	}
+	resp := UploadStatusResponse{
+		ID:         intent.ID,
+		FileName:   intent.FileName,
+		Status:     *status,
+		UploadedAt: intent.UploadedAt,
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {

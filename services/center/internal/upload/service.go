@@ -21,6 +21,7 @@ type IntentStore interface {
 
 type Store interface {
 	IntentStore
+	GetDocumentByHash(ctx context.Context, hash string) (*domain.Document, error)
 }
 
 type Blob interface {
@@ -127,4 +128,42 @@ func (s *Service) resolveLostGate(ctx context.Context, id string, now time.Time)
 		intent.Status = domain.IntentExpired
 		return intent, ErrIntentExpired
 	}
+}
+
+func (s *Service) GetUploadStatus(ctx context.Context, id string) (*domain.Intent, *string, error) {
+	intent, err := s.repo.GetIntent(ctx, id)
+	if err != nil {
+		if errors.Is(err, ErrIntentNotFound) {
+			return nil, nil, err
+		}
+		return nil, nil, fmt.Errorf("get upload_intent: %w", err)
+	}
+	var status string
+	now := time.Now().UTC()
+	if intent.Status == domain.IntentWaiting && now.After(intent.ExpiresAt) {
+		status = domain.IntentExpired.String()
+	} else if intent.Hash != nil {
+		document, err := s.GetDocument(ctx, *intent.Hash)
+		if err != nil {
+			return nil, nil, fmt.Errorf("get document: %w", err)
+		}
+		if document != nil {
+			status = string(document.Status)
+		}
+	} else if intent.Status == domain.IntentHashed || intent.Status == domain.IntentHashing {
+		status = string(domain.DocumentProcessing)
+	} else if intent.Status == domain.IntentUnknown {
+		return nil, nil, ErrIntentUnknown
+	} else {
+		status = intent.Status.String()
+	}
+	return intent, &status, nil
+}
+
+func (s *Service) GetDocument(ctx context.Context, hash string) (*domain.Document, error) {
+	document, err := s.repo.GetDocumentByHash(ctx, hash)
+	if err != nil {
+		return nil, fmt.Errorf("get document: %w", err)
+	}
+	return document, nil
 }
