@@ -12,6 +12,7 @@ import (
 type Store struct {
 	*IntentStore
 	*DocumentStore
+	*OutboxStore
 	db *sql.DB
 }
 
@@ -19,6 +20,7 @@ func NewStore(db *sql.DB) *Store {
 	return &Store{
 		IntentStore:   NewIntentStore(db),
 		DocumentStore: NewDocumentStore(db),
+		OutboxStore:   NewOutboxStore(db),
 		db:            db,
 	}
 }

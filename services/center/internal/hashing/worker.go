@@ -65,7 +65,7 @@ func NewWorkerID() string {
 	if err != nil || host == "" {
 		host = "unknown"
 	}
-	return host + "/" + uuid.NewString()
+	return host + "/hash/" + uuid.NewString()
 }
 
 // Worker claims UPLOADED intents, hashes and moves their objects, and records the result.

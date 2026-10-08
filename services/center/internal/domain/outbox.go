@@ -11,8 +11,8 @@ const (
 	OutboxBlocked   OutboxStatus = "BLOCKED"
 )
 
-type OutboxEvent struct {
-	Id        int
+type OutboxMessage struct {
+	Id        int64
 	Hash      string
 	Status    OutboxStatus
 	ClaimedBy *string
