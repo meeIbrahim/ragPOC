@@ -47,6 +47,9 @@ type RedisConfig struct {
 	Port          int    `toml:"port"`
 	Stream        string `toml:"stream"`
 	ConsumerGroup string `toml:"consumer_group"`
+	// StreamMaxLen caps the stream length (entries). XADD trims the oldest entries beyond it,
+	// whether or not a consumer has read them, so size it above the worst-case backlog.
+	StreamMaxLen int64 `toml:"stream_max_len"`
 }
 
 type GoConfig struct {

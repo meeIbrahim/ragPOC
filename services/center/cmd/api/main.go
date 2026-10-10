@@ -15,14 +15,22 @@ import (
 	"time"
 
 	"center-service/internal/config"
+	redisevents "center-service/internal/events/redis"
 	"center-service/internal/hashing"
 	"center-service/internal/httpapi"
+	"center-service/internal/outbox"
 	"center-service/internal/storage/minio"
 	"center-service/internal/store/sqlite"
 	"center-service/internal/upload"
 )
 
-const hashWorkers = 2
+const (
+	hashWorkers   = 2
+	outboxWorkers = 2
+)
+
+// The sqlite store must satisfy the outbox worker's persistence needs.
+var _ outbox.Store = (*sqlite.Store)(nil)
 
 func main() {
 	configPath := flag.String("config", "config.toml", "path to config.toml")
@@ -45,9 +53,15 @@ func main() {
 		log.Fatalf("Error Creating Minio Client: %v", err)
 	}
 
-	// Cancelled on Ctrl-C / SIGTERM; stops the HTTP server, hash workers and sweeper.
+	// Cancelled on Ctrl-C / SIGTERM; stops the HTTP server, hash and outbox workers, and sweepers.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	redisClient, err := redisevents.NewClient(ctx, cfg.Redis)
+	if err != nil {
+		log.Fatalf("Error Creating Redis Client: %v", err)
+	}
+	defer redisClient.Close()
 
 	store := sqlite.NewStore(db)
 
@@ -66,6 +80,23 @@ func main() {
 	go func() {
 		defer wg.Done()
 		sweeper.Run(ctx)
+	}()
+
+	outboxCfg := outbox.DefaultConfig()
+	producer := redisevents.NewProducer(redisClient)
+	for range outboxWorkers {
+		worker := outbox.NewWorker(outbox.NewWorkerId(), outboxCfg, store, producer, logger)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			worker.Run(ctx)
+		}()
+	}
+	outboxSweeper := outbox.NewSweeper(outboxCfg, store, logger)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		outboxSweeper.Run(ctx)
 	}()
 
 	svc := upload.NewService(store, minioClient, logger)

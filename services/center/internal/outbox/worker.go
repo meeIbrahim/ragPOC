@@ -2,6 +2,7 @@ package outbox
 
 import (
 	"center-service/internal/domain"
+	"center-service/internal/events"
 	"context"
 	"errors"
 	"log/slog"
@@ -30,6 +31,9 @@ type Config struct {
 	StaleThreshold   time.Duration
 	SchemaVersion    int
 }
+type Producer interface {
+	PublishIngestionEvent(ctx context.Context, event *events.StreamIngestionEvent) (string, error)
+}
 
 func DefaultConfig() Config {
 	return Config{
@@ -52,18 +56,20 @@ func NewWorkerId() string {
 }
 
 type Worker struct {
-	id     string
-	cfg    Config
-	repo   Store
-	logger *slog.Logger
+	id       string
+	cfg      Config
+	repo     Store
+	producer Producer
+	logger   *slog.Logger
 }
 
-func NewWorker(id string, cfg Config, repo Store, logger *slog.Logger) *Worker {
+func NewWorker(id string, cfg Config, repo Store, producer Producer, logger *slog.Logger) *Worker {
 	return &Worker{
-		id:     id,
-		cfg:    cfg,
-		repo:   repo,
-		logger: logger.With("worker", id),
+		id:       id,
+		cfg:      cfg,
+		producer: producer,
+		repo:     repo,
+		logger:   logger.With("worker", id),
 	}
 }
 
@@ -123,7 +129,7 @@ func (w *Worker) processMessage(ctx context.Context, msg *domain.OutboxMessage) 
 		w.markBlocked(ctx, msg.Id)
 		return
 	}
-	err = w.publishMessage(jobCtx, msg, document)
+	_, err = w.publishMessage(jobCtx, msg, document)
 	if err != nil {
 		w.logger.Error("Failed to publish message", "id", msg.Id, "error", err)
 		w.releaseClaim(ctx, msg.Id)
@@ -139,17 +145,26 @@ func (w *Worker) processMessage(ctx context.Context, msg *domain.OutboxMessage) 
 	}
 }
 
-func (w *Worker) publishMessage(ctx context.Context, msg *domain.OutboxMessage, document *domain.Document) error {
-	// TODO: Publish Logic
-	// event := Event{
-	// 	Hash:          msg.Hash,
-	// 	BucketPath:    document.PermBucketPath,
-	// 	FileName:      document.FileName,
-	// 	Size:          document.Size,
-	// 	Attempt:       document.Retries,
-	// 	SchemaVersion: w.cfg.SchemaVersion,
-	// }
-	return nil
+func (w *Worker) publishMessage(ctx context.Context, msg *domain.OutboxMessage, document *domain.Document) (*string, error) {
+	now := time.Now().UTC()
+	event := &events.StreamIngestionEvent{
+		ID:            uuid.NewString(),
+		Hash:          document.Hash,
+		Filename:      document.FileName,
+		BucketPath:    document.PermBucketPath,
+		Size:          document.Size,
+		Attempts:      document.Retries,
+		CreatedAt:     now,
+		SchemaVersion: w.cfg.SchemaVersion,
+	}
+	messageId, err := w.producer.PublishIngestionEvent(ctx, event)
+	if err != nil {
+		w.logger.Error("Failed to publish ingestion event", "hash", document.Hash, "error", err)
+		return nil, err
+	}
+	w.logger.Info("Published ingestion event", "messageId", messageId, "hash", document.Hash)
+	return &messageId, nil
+
 }
 
 func (w *Worker) markBlocked(ctx context.Context, id int64) {
@@ -188,6 +203,24 @@ func NewSweeper(cfg Config, repo Store, logger *slog.Logger) *Sweeper {
 	}
 }
 
+// Run sweeps every cfg.RecoveryInterval until ctx is cancelled.
 func (s *Sweeper) Run(ctx context.Context) {
-	//Recover
+	ticker := time.NewTicker(s.cfg.RecoveryInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			cutoff := time.Now().UTC().Add(-s.cfg.StaleThreshold)
+			n, err := s.repo.RecoverStaleOutbox(ctx, cutoff, s.cfg.MaxRetries)
+			if err != nil {
+				s.logger.Error("recover stale outbox claims failed", "err", err)
+				continue
+			}
+			if n > 0 {
+				s.logger.Warn("recovered stale outbox claims", "count", n)
+			}
+		}
+	}
 }

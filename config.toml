@@ -23,6 +23,8 @@ host="localhost"
 port=6379
 stream="ingest.docs"
 consumer_group="rag-pdf-fixed"
+# 50 docs/min peak x 72h outage x 1.5 safety
+stream_max_len=324000
 
 [go]
 port=8080
