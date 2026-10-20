@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -40,10 +41,16 @@ type fakeStore struct {
 
 	deadline time.Time
 	hadDL    bool
+
+	pingErr    error
+	ctxErrSeen error
 }
+
+func (f *fakeStore) Ping(ctx context.Context) error { return f.pingErr }
 
 func (f *fakeStore) ApplyIndexed(ctx context.Context, hash string, attempts int, now time.Time) (bool, error) {
 	f.deadline, f.hadDL = ctx.Deadline()
+	f.ctxErrSeen = ctx.Err()
 	f.indexed = append(f.indexed, applyIndexedCall{hash, attempts, now})
 	return f.indexedResult, f.err
 }
@@ -189,12 +196,48 @@ func TestHandleBoundsTheStoreCallWithEntryTimeout(t *testing.T) {
 	}
 }
 
-func TestHandleDoesNotAckWhenParentContextIsCancelled(t *testing.T) {
+// SIGTERM must not abort the entry being handled: a cancelled store call would fail, leave the
+// entry pending and spend one of its poison deliveries. The call is still bounded by the
+// entry timeout.
+func TestHandleFinishesTheInFlightEntryDuringShutdown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	store := &fakeStore{err: ctx.Err()}
-	if ack := newHandler(store).Handle(ctx, entryFromFixture(t, "status_indexed.json")); ack {
-		t.Fatal("acked during shutdown; the entry must stay pending")
+	store := &fakeStore{indexedResult: true}
+	if ack := newHandler(store).Handle(ctx, entryFromFixture(t, "status_indexed.json")); !ack {
+		t.Fatal("the in-flight entry was not completed and acked")
+	}
+	if store.ctxErrSeen != nil {
+		t.Fatalf("store call saw a cancelled context: %v", store.ctxErrSeen)
+	}
+	if !store.hadDL {
+		t.Fatal("store call lost its entry timeout")
+	}
+}
+
+func TestHealthyReportsTheStoreState(t *testing.T) {
+	store := &fakeStore{}
+	h := newHandler(store)
+	if err := h.Healthy(context.Background()); err != nil {
+		t.Fatalf("healthy store reported %v", err)
+	}
+	store.pingErr = errors.New("database is locked")
+	if err := h.Healthy(context.Background()); err == nil {
+		t.Fatal("unhealthy store reported healthy")
+	}
+}
+
+// Producer-controlled values are logged; they must not be able to write huge log lines.
+func TestHandleBoundsLoggedProducerValues(t *testing.T) {
+	var logs strings.Builder
+	h := NewHandler(&fakeStore{}, 3, 5*time.Second, slog.New(slog.NewTextHandler(&logs, nil)))
+	huge := strings.Repeat("x", 100000)
+	h.Handle(context.Background(), events.StreamEntry{ID: "1-0", Values: map[string]any{"event_type": huge}})
+	h.Handle(context.Background(), events.StreamEntry{ID: "2-0", Values: map[string]any{
+		"event_type": events.StatusEventType,
+		"payload":    `{"hash":"` + huge + `","status":"INDEXED","attempts":0,"schema_version":1}`,
+	}})
+	if logs.Len() > 4000 {
+		t.Fatalf("handler wrote %d bytes of log for two bad entries", logs.Len())
 	}
 }
 

@@ -82,3 +82,14 @@ func (s *Store) ApplyFailed(ctx context.Context, hash string, attempts int, retr
 	}
 	return domain.FailedExhausted, nil
 }
+
+// Ping reports whether the database can take a write right now. A plain connection check is
+// not enough: another process holding the write lock past busy_timeout, a full disk or a
+// read-only filesystem all leave reads working while every ApplyIndexed/ApplyFailed fails. The
+// statement matches no row, so it changes nothing, but it still needs the write lock.
+func (s *Store) Ping(ctx context.Context) error {
+	if _, err := s.db.ExecContext(ctx, `UPDATE document_store SET updated_at = updated_at WHERE hash = ''`); err != nil {
+		return fmt.Errorf("database write probe: %w", err)
+	}
+	return nil
+}

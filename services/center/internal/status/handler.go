@@ -3,6 +3,7 @@ package status
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -14,11 +15,13 @@ import (
 type Store interface {
 	ApplyIndexed(ctx context.Context, hash string, attempts int, now time.Time) (applied bool, err error)
 	ApplyFailed(ctx context.Context, hash string, attempts int, retryable bool, maxAttempts int, now time.Time) (domain.FailedOutcome, error)
+	// Ping reports whether the store can take a write now.
+	Ping(ctx context.Context) error
 }
 
-// maxLoggedDetail caps the producer's free-text detail so a misbehaving producer cannot flood
-// the logs.
-const maxLoggedDetail = 256
+// maxLoggedValue caps producer-controlled values (detail, hash, event_type) in log lines, so a
+// misbehaving producer cannot flood the logs.
+const maxLoggedValue = 256
 
 // Handler turns one status stream entry into a store call and says whether to acknowledge it.
 type Handler struct {
@@ -50,7 +53,7 @@ func (h *Handler) Handle(ctx context.Context, entry events.StreamEntry) (ack boo
 	log := h.logger.With("entry", entry.ID)
 
 	if eventType, _ := entry.Values["event_type"].(string); eventType != events.StatusEventType {
-		log.Warn("discarding entry with unexpected event_type", "event_type", entry.Values["event_type"])
+		log.Warn("discarding entry with unexpected event_type", "event_type", clip(fmt.Sprint(entry.Values["event_type"])))
 		return true
 	}
 	payload, ok := payloadBytes(entry.Values["payload"])
@@ -63,9 +66,11 @@ func (h *Handler) Handle(ctx context.Context, entry events.StreamEntry) (ack boo
 		log.Warn("discarding invalid status event", "err", err)
 		return true
 	}
-	log = log.With("hash", ev.Hash, "attempts", ev.Attempts, "status", ev.Status)
+	log = log.With("hash", clip(ev.Hash), "attempts", ev.Attempts, "status", ev.Status)
 
-	ctx, cancel := context.WithTimeout(ctx, h.entryTimeout)
+	// The store call is bounded by the entry timeout but not by shutdown: cancelling it would
+	// fail the entry being handled, leave it pending and spend one of its poison deliveries.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), h.entryTimeout)
 	defer cancel()
 
 	switch ev.Status {
@@ -100,6 +105,14 @@ func (h *Handler) Handle(ctx context.Context, entry events.StreamEntry) (ack boo
 	return true
 }
 
+// Healthy reports whether the store can take a write. The worker uses it to avoid reading or
+// claiming entries while every apply would fail.
+func (h *Handler) Healthy(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, h.entryTimeout)
+	defer cancel()
+	return h.store.Ping(ctx)
+}
+
 func payloadBytes(v any) ([]byte, bool) {
 	switch p := v.(type) {
 	case string:
@@ -111,8 +124,8 @@ func payloadBytes(v any) ([]byte, bool) {
 }
 
 func clip(s string) string {
-	if len(s) <= maxLoggedDetail {
+	if len(s) <= maxLoggedValue {
 		return s
 	}
-	return s[:maxLoggedDetail] + "..."
+	return s[:maxLoggedValue] + "..."
 }

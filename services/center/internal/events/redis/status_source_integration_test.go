@@ -5,12 +5,15 @@ package redis
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,6 +21,7 @@ import (
 	goredis "github.com/redis/go-redis/v9"
 
 	"center-service/internal/config"
+	"center-service/internal/events"
 	"center-service/internal/status"
 )
 
@@ -263,3 +267,76 @@ func TestCleanupConsumersDeletesOnlyIdleConsumersWithoutPending(t *testing.T) {
 		t.Fatalf("pending = %+v err %v, want the busy consumer's entry intact", pending, err)
 	}
 }
+
+func TestReadNewAndClaimStaleReportAMissingGroup(t *testing.T) {
+	src, client, _ := newSource(t)
+	ctx := context.Background()
+	if err := src.EnsureGroup(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.rdb.Del(ctx, client.StatusStream).Err(); err != nil { // what a Redis restart without the group does
+		t.Fatal(err)
+	}
+
+	if _, err := src.ReadNew(ctx, "c1", 50*time.Millisecond, 10); !errors.Is(err, events.ErrNoGroup) {
+		t.Errorf("ReadNew error = %v, want events.ErrNoGroup", err)
+	}
+	if _, err := src.ClaimStale(ctx, "c1", time.Second, 10); !errors.Is(err, events.ErrNoGroup) {
+		t.Errorf("ClaimStale error = %v, want events.ErrNoGroup", err)
+	}
+}
+
+// The whole point of ErrNoGroup: a running worker keeps handling entries after the group (and
+// the stream) vanish underneath it.
+func TestWorkerKeepsWorkingAfterTheGroupIsDeleted(t *testing.T) {
+	src, client, _ := newSource(t)
+	var mu sync.Mutex
+	var seen []string
+	handler := handlerFunc(func(_ context.Context, e events.StreamEntry) bool {
+		mu.Lock()
+		defer mu.Unlock()
+		seen = append(seen, e.Values["payload"].(string))
+		return true
+	})
+	worker := status.NewWorker("host/status/it", status.WorkerConfig{
+		MinIdle: time.Minute, RecoveryInterval: 300 * time.Millisecond, PoisonThreshold: 3,
+		CleanupIdle: time.Hour, ReadBlock: 100 * time.Millisecond, BatchSize: 10, RetryDelay: 50 * time.Millisecond,
+	}, src, handler, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { worker.Run(ctx); close(done) }()
+	t.Cleanup(func() { cancel(); <-done })
+
+	handled := func(payload string) bool {
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			mu.Lock()
+			for _, p := range seen {
+				if p == payload {
+					mu.Unlock()
+					return true
+				}
+			}
+			mu.Unlock()
+			time.Sleep(25 * time.Millisecond)
+		}
+		return false
+	}
+
+	add(t, client, "before")
+	if !handled("before") {
+		t.Fatal("setup: the first entry was not handled")
+	}
+	if err := client.rdb.Del(context.Background(), client.StatusStream).Err(); err != nil {
+		t.Fatal(err)
+	}
+	add(t, client, "after")
+	if !handled("after") {
+		t.Fatal("the worker never recovered from the deleted group: the entry added afterwards was not handled")
+	}
+}
+
+type handlerFunc func(ctx context.Context, e events.StreamEntry) bool
+
+func (h handlerFunc) Handle(ctx context.Context, e events.StreamEntry) bool { return h(ctx, e) }

@@ -47,7 +47,7 @@ func (s *StatusSource) ReadNew(ctx context.Context, consumer string, block time.
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("read group: %w", err)
+		return nil, wrapNoGroup(fmt.Errorf("read group: %w", err))
 	}
 	var entries []events.StreamEntry
 	for _, stream := range streams {
@@ -70,7 +70,7 @@ func (s *StatusSource) ClaimStale(ctx context.Context, consumer string, minIdle 
 		Count:    count,
 	}).Result()
 	if err != nil {
-		return nil, fmt.Errorf("autoclaim: %w", err)
+		return nil, wrapNoGroup(fmt.Errorf("autoclaim: %w", err))
 	}
 	if len(deleted) > 0 {
 		s.logger.Error("pending status entries no longer exist in the stream; those events are lost", "ids", deleted)
@@ -121,6 +121,15 @@ func (s *StatusSource) CleanupConsumers(ctx context.Context, self string, idle t
 		deleted = append(deleted, c.Name)
 	}
 	return deleted, nil
+}
+
+// wrapNoGroup marks Redis's NOGROUP error so the worker can tell "the group is gone" from a
+// transient failure.
+func wrapNoGroup(err error) error {
+	if strings.Contains(err.Error(), "NOGROUP") {
+		return fmt.Errorf("%w: %w", events.ErrNoGroup, err)
+	}
+	return err
 }
 
 func toEntries(msgs []redis.XMessage) []events.StreamEntry {

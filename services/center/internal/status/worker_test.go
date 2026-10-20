@@ -112,6 +112,15 @@ type handlerFunc func(ctx context.Context, e events.StreamEntry) bool
 
 func (h handlerFunc) Handle(ctx context.Context, e events.StreamEntry) bool { return h(ctx, e) }
 
+// healthHandler adds the optional store health probe the worker uses to avoid reading or
+// claiming while the database cannot take writes.
+type healthHandler struct {
+	handlerFunc
+	healthy func(ctx context.Context) error
+}
+
+func (h healthHandler) Healthy(ctx context.Context) error { return h.healthy(ctx) }
+
 func entry(id string) events.StreamEntry { return events.StreamEntry{ID: id} }
 
 func testConfig() WorkerConfig {
@@ -158,10 +167,11 @@ func TestReadOnceAcksOnlyAfterHandlingAndOnlyWhenHandled(t *testing.T) {
 	}
 	w := newWorker(src, recordingHandler(src, func(id string) bool { return id != "2-0" }), testConfig())
 
-	if err := w.readOnce(context.Background()); err != nil {
-		t.Fatal(err)
+	// 2-0 cannot be finished: 1-0 is acked, and 3-0 is left for later instead of being read on.
+	if err := w.readOnce(context.Background()); !errors.Is(err, errHandlerFailed) {
+		t.Fatalf("err = %v, want errHandlerFailed", err)
 	}
-	want := "read,handle:1-0,ack:1-0,handle:2-0,handle:3-0,ack:3-0"
+	want := "read,handle:1-0,ack:1-0,handle:2-0"
 	if got := strings.Join(src.events(), ","); got != want {
 		t.Fatalf("calls = %s\nwant    %s", got, want)
 	}
@@ -262,7 +272,7 @@ func TestRecoverOnceProcessesReclaimedEntriesUnderThePoisonThreshold(t *testing.
 	src.countFn = func(context.Context, string) (int64, error) { return 3, nil } // 3 is not over 3
 	w := newWorker(src, recordingHandler(src, func(string) bool { return true }), testConfig())
 
-	w.recoverOnce(context.Background())
+	_ = w.recoverOnce(context.Background())
 
 	want := "claim:host/status/test:1m0s,count:1-0,handle:1-0,ack:1-0,cleanup:host/status/test:1h0m0s"
 	if got := strings.Join(src.events(), ","); got != want {
@@ -280,7 +290,7 @@ func TestRecoverOnceDropsPoisonEntries(t *testing.T) {
 	src.countFn = func(context.Context, string) (int64, error) { return 4, nil }
 	w := newWorker(src, recordingHandler(src, func(string) bool { return true }), testConfig())
 
-	w.recoverOnce(context.Background())
+	_ = w.recoverOnce(context.Background())
 
 	if src.count("handle:") != 0 {
 		t.Fatal("a poison entry was handled again")
@@ -300,7 +310,7 @@ func TestRecoverOnceLogsTheFullPoisonEntry(t *testing.T) {
 	w := NewWorker("host/status/test", testConfig(), src, recordingHandler(src, func(string) bool { return true }),
 		slog.New(slog.NewTextHandler(&logs, nil)))
 
-	w.recoverOnce(context.Background())
+	_ = w.recoverOnce(context.Background())
 
 	for _, want := range []string{"level=ERROR", "9-0", "the-full-payload"} {
 		if !strings.Contains(logs.String(), want) {
@@ -319,7 +329,7 @@ func TestRecoverOnceLeavesEntryPendingWhenCountFails(t *testing.T) {
 	src.countFn = func(context.Context, string) (int64, error) { return 0, errors.New("redis down") }
 	w := newWorker(src, recordingHandler(src, func(string) bool { return true }), testConfig())
 
-	w.recoverOnce(context.Background())
+	_ = w.recoverOnce(context.Background())
 
 	if src.count("handle:") != 0 || src.count("ack:") != 0 {
 		t.Fatalf("entry was touched: %v", src.events())
@@ -331,7 +341,7 @@ func TestRecoverOnceStillCleansUpWhenClaimFails(t *testing.T) {
 		return nil, errors.New("redis hiccup")
 	}}
 	w := newWorker(src, recordingHandler(src, func(string) bool { return true }), testConfig())
-	w.recoverOnce(context.Background())
+	_ = w.recoverOnce(context.Background())
 	if src.count("cleanup:host/status/test:1h0m0s") != 1 {
 		t.Fatalf("cleanup skipped: %v", src.events())
 	}
@@ -343,7 +353,7 @@ func TestRecoverOnceKeepsEntryPendingWhenHandlerFails(t *testing.T) {
 		return []events.StreamEntry{entry("1-0")}, nil
 	}
 	w := newWorker(src, recordingHandler(src, func(string) bool { return false }), testConfig())
-	w.recoverOnce(context.Background())
+	_ = w.recoverOnce(context.Background())
 	if src.count("ack:") != 0 {
 		t.Fatal("acked although the handler failed")
 	}
@@ -407,7 +417,7 @@ func TestRunSurvivesReadErrors(t *testing.T) {
 	}
 }
 
-func TestRunStopsPromptlyWhenContextIsCancelled(t *testing.T) {
+func TestRunReturnsOnceTheContextIsCancelledAndReadReturns(t *testing.T) {
 	src := &fakeSource{}
 	ctx, cancel := context.WithCancel(context.Background())
 	w := newWorker(src, recordingHandler(src, func(string) bool { return true }), testConfig())
@@ -450,8 +460,8 @@ func TestRunRecoversPeriodically(t *testing.T) {
 	if n := src.count("claim:"); n < 3 {
 		t.Fatalf("recovery ran %d times in 200ms at a 30ms interval, want at least 3", n)
 	}
-	if first := src.events()[0]; first != "ensure" {
-		t.Fatalf("first call = %s, want ensure", first)
+	if got := src.events(); got[0] != "ensure" || !strings.HasPrefix(got[1], "claim:") {
+		t.Fatalf("first calls = %v, want ensure then an immediate recovery pass", got[:2])
 	}
 	if n := src.count("cleanup:"); n != src.count("claim:") {
 		t.Fatalf("cleanup ran %d times for %d claims; each pass does both", n, src.count("claim:"))
@@ -464,5 +474,241 @@ func waitFor(t *testing.T, done <-chan struct{}) {
 	case <-done:
 	case <-time.After(3 * time.Second):
 		t.Fatal("Run did not return")
+	}
+}
+
+// ---- review round: group loss, store outages, shutdown, claim rounds
+
+func noGroup() error { return fmt.Errorf("%w: NOGROUP No such key", events.ErrNoGroup) }
+
+// If Redis loses the group (restart before a snapshot, FLUSHALL) every read fails with NOGROUP.
+// The worker must create it again, or every later status event is ignored.
+func TestRunRecreatesAGroupThatDisappeared(t *testing.T) {
+	src := &fakeSource{}
+	reads := 0
+	ctx, cancel := context.WithCancel(context.Background())
+	src.readFn = func(context.Context, string, time.Duration, int64) ([]events.StreamEntry, error) {
+		reads++
+		switch reads {
+		case 1:
+			return nil, noGroup()
+		case 2:
+			return []events.StreamEntry{entry("1-0")}, nil
+		}
+		cancel()
+		return nil, nil
+	}
+	w := newWorker(src, recordingHandler(src, func(string) bool { return true }), testConfig())
+
+	done := make(chan struct{})
+	go func() { w.Run(ctx); close(done) }()
+	waitFor(t, done)
+
+	if src.count("ensure") != 2 {
+		t.Fatalf("EnsureGroup called %d times, want 2 (start + after NOGROUP): %v", src.count("ensure"), src.events())
+	}
+	if src.count("ack:1-0") != 1 {
+		t.Fatalf("entry after the group was recreated was not processed: %v", src.events())
+	}
+}
+
+func TestRunRecreatesAGroupThatDisappearedDuringRecovery(t *testing.T) {
+	src := &fakeSource{}
+	claims := 0
+	ctx, cancel := context.WithCancel(context.Background())
+	src.claimFn = func(context.Context, string, time.Duration, int64) ([]events.StreamEntry, error) {
+		claims++
+		return nil, noGroup()
+	}
+	src.readFn = func(context.Context, string, time.Duration, int64) ([]events.StreamEntry, error) {
+		cancel() // the loop got past the recovery pass and the group re-creation
+		return nil, nil
+	}
+	w := newWorker(src, recordingHandler(src, func(string) bool { return true }), testConfig())
+
+	done := make(chan struct{})
+	go func() { w.Run(ctx); close(done) }()
+	waitFor(t, done)
+
+	if src.count("ensure") < 2 {
+		t.Fatalf("EnsureGroup not repeated after NOGROUP in the recovery pass: %v", src.events())
+	}
+}
+
+// When the store cannot take a write, stop the batch: the rest of it stays unread instead of
+// being delivered once and then riding the poison clock.
+func TestReadOnceStopsTheBatchWhenTheHandlerFails(t *testing.T) {
+	src := &fakeSource{}
+	src.readFn = func(context.Context, string, time.Duration, int64) ([]events.StreamEntry, error) {
+		return []events.StreamEntry{entry("1-0"), entry("2-0"), entry("3-0")}, nil
+	}
+	w := newWorker(src, recordingHandler(src, func(string) bool { return false }), testConfig())
+
+	err := w.readOnce(context.Background())
+	if !errors.Is(err, errHandlerFailed) {
+		t.Fatalf("err = %v, want errHandlerFailed", err)
+	}
+	if src.count("handle:") != 1 || src.count("ack:") != 0 {
+		t.Fatalf("calls = %v, want one handle and no ack", src.events())
+	}
+}
+
+// While the store is unhealthy no new entries are read, so an outage cannot drain the stream
+// into the pending list.
+func TestRunDoesNotReadWhileTheStoreIsUnhealthy(t *testing.T) {
+	src := &fakeSource{}
+	ctx, cancel := context.WithCancel(context.Background())
+	reads := 0
+	src.readFn = func(context.Context, string, time.Duration, int64) ([]events.StreamEntry, error) {
+		reads++
+		if reads == 1 {
+			return []events.StreamEntry{entry("1-0")}, nil
+		}
+		cancel()
+		return nil, nil
+	}
+	var probes int
+	h := healthHandler{
+		handlerFunc: func(context.Context, events.StreamEntry) bool { return false },
+		healthy: func(context.Context) error {
+			probes++
+			if probes < 4 {
+				return errors.New("database is locked")
+			}
+			return nil
+		},
+	}
+	w := newWorker(src, h, testConfig())
+
+	done := make(chan struct{})
+	go func() { w.Run(ctx); close(done) }()
+	waitFor(t, done)
+
+	if probes < 4 {
+		t.Fatalf("only %d probes; the worker did not wait for the store", probes)
+	}
+	if reads != 2 {
+		t.Fatalf("%d reads: one failed batch plus one after recovery expected", reads)
+	}
+}
+
+// Claiming bumps the delivery count. While the store is down that would push good entries
+// toward the poison threshold for no reason, so the pass skips the claim.
+func TestRecoverOnceSkipsClaimingWhileTheStoreIsUnhealthy(t *testing.T) {
+	src := &fakeSource{}
+	h := healthHandler{
+		handlerFunc: func(context.Context, events.StreamEntry) bool { return true },
+		healthy:     func(context.Context) error { return errors.New("disk full") },
+	}
+	w := newWorker(src, h, testConfig())
+
+	if err := w.recoverOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if src.count("claim:") != 0 {
+		t.Fatalf("claimed while unhealthy: %v", src.events())
+	}
+	if src.count("cleanup:") != 1 {
+		t.Fatalf("cleanup should still run (it needs no database): %v", src.events())
+	}
+}
+
+// A full batch means more stale entries may be waiting; one pass keeps claiming (bounded) so a
+// backlog does not take hours to drain at one batch per interval.
+func TestRecoverOnceClaimsInRoundsWhileBatchesAreFull(t *testing.T) {
+	src := &fakeSource{}
+	cfg := testConfig()
+	cfg.BatchSize = 2
+	round := 0
+	src.claimFn = func(context.Context, string, time.Duration, int64) ([]events.StreamEntry, error) {
+		round++
+		switch round {
+		case 1:
+			return []events.StreamEntry{entry("1-0"), entry("2-0")}, nil
+		case 2:
+			return []events.StreamEntry{entry("3-0"), entry("4-0")}, nil
+		}
+		return []events.StreamEntry{entry("5-0")}, nil // partial batch: stop
+	}
+	w := newWorker(src, recordingHandler(src, func(string) bool { return true }), cfg)
+
+	if err := w.recoverOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if src.count("claim:") != 3 || src.count("handle:") != 5 {
+		t.Fatalf("claims=%d handles=%d, want 3 and 5: %v", src.count("claim:"), src.count("handle:"), src.events())
+	}
+}
+
+func TestRecoverOnceRoundsAreBounded(t *testing.T) {
+	src := &fakeSource{}
+	cfg := testConfig()
+	cfg.BatchSize = 1
+	src.claimFn = func(context.Context, string, time.Duration, int64) ([]events.StreamEntry, error) {
+		return []events.StreamEntry{entry("1-0")}, nil // always full
+	}
+	w := newWorker(src, recordingHandler(src, func(string) bool { return true }), cfg)
+	_ = w.recoverOnce(context.Background())
+	if n := src.count("claim:"); n != maxRecoveryRounds {
+		t.Fatalf("claimed %d rounds, want the bound %d", n, maxRecoveryRounds)
+	}
+}
+
+func TestReadOnceStopsProcessingTheRestOfTheBatchOnShutdown(t *testing.T) {
+	src := &fakeSource{}
+	ctx, cancel := context.WithCancel(context.Background())
+	src.readFn = func(context.Context, string, time.Duration, int64) ([]events.StreamEntry, error) {
+		return []events.StreamEntry{entry("1-0"), entry("2-0"), entry("3-0")}, nil
+	}
+	w := newWorker(src, handlerFunc(func(_ context.Context, e events.StreamEntry) bool {
+		src.record("handle:%s", e.ID)
+		cancel()
+		return true
+	}), testConfig())
+
+	if err := w.readOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if src.count("handle:") != 1 || src.count("ack:1-0") != 1 {
+		t.Fatalf("calls = %v, want the in-flight entry finished and the rest left for later", src.events())
+	}
+}
+
+// go-redis turns a block under 1ms into BLOCK 0, which waits forever.
+func TestReadBlockIsAtLeastOneMillisecond(t *testing.T) {
+	src := &fakeSource{}
+	cfg := testConfig()
+	cfg.RecoveryInterval = 500 * time.Microsecond
+	w := newWorker(src, recordingHandler(src, func(string) bool { return true }), cfg)
+	if err := w.readOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(src.blocks) != 1 || src.blocks[0] < time.Millisecond {
+		t.Fatalf("block = %v, want at least 1ms", src.blocks)
+	}
+}
+
+func TestRunBacksOffAfterAReadError(t *testing.T) {
+	src := &fakeSource{}
+	cfg := testConfig()
+	cfg.RetryDelay = 80 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	var times []time.Time
+	src.readFn = func(context.Context, string, time.Duration, int64) ([]events.StreamEntry, error) {
+		times = append(times, time.Now())
+		if len(times) == 1 {
+			return nil, errors.New("connection reset")
+		}
+		cancel()
+		return nil, nil
+	}
+	w := newWorker(src, recordingHandler(src, func(string) bool { return true }), cfg)
+
+	done := make(chan struct{})
+	go func() { w.Run(ctx); close(done) }()
+	waitFor(t, done)
+
+	if len(times) < 2 || times[1].Sub(times[0]) < 70*time.Millisecond {
+		t.Fatalf("second read came %v after the failed one, want the retry delay", times[1].Sub(times[0]))
 	}
 }

@@ -308,3 +308,32 @@ func TestApplyFailedFullRetryLadder(t *testing.T) {
 		t.Errorf("outbox rows = %d, want 3", total)
 	}
 }
+
+// ---- Ping
+
+func TestPingSucceedsOnAHealthyDatabaseAndChangesNothing(t *testing.T) {
+	s, db := newStore(t)
+	insertDoc(t, db, hash, domain.DocumentProcessing, 0)
+
+	if err := s.Ping(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	assertDoc(t, s, domain.DocumentProcessing, 0, false) // the probe must not touch any row
+}
+
+func TestPingFailsWhenTheDatabaseIsUnusable(t *testing.T) {
+	s, db := newStore(t)
+	db.Close()
+	if err := s.Ping(context.Background()); err == nil {
+		t.Fatal("Ping succeeded on a closed database")
+	}
+}
+
+func TestPingHonoursItsContext(t *testing.T) {
+	s, _ := newStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := s.Ping(ctx); err == nil {
+		t.Fatal("Ping ignored a cancelled context")
+	}
+}

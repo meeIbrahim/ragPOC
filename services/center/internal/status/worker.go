@@ -2,6 +2,7 @@ package status
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"time"
@@ -17,7 +18,17 @@ const (
 	defaultBatchSize  = 10
 	defaultRetryDelay = time.Second
 	ackTimeout        = 5 * time.Second
+	// maxRecoveryRounds bounds how many full batches one recovery pass claims.
+	maxRecoveryRounds = 10
 )
+
+// errHandlerFailed is returned by readOnce when the handler could not finish an entry.
+var errHandlerFailed = errors.New("handler could not finish the entry")
+
+// healthChecker is implemented by handlers that can tell whether the store takes writes.
+type healthChecker interface {
+	Healthy(ctx context.Context) error
+}
 
 // EntryHandler turns one stream entry into a store call and reports whether to acknowledge it.
 type EntryHandler interface {
@@ -92,71 +103,113 @@ func NewWorker(id string, cfg WorkerConfig, src Source, handler EntryHandler, lo
 func (w *Worker) Run(ctx context.Context) {
 	defer w.logger.Info("status worker stopped")
 
-	for {
-		err := w.src.EnsureGroup(ctx)
-		if err == nil {
-			break
-		}
-		w.logger.Error("cannot create the status consumer group; retrying", "err", err)
-		if !w.sleep(ctx, w.cfg.RetryDelay) {
-			return
-		}
+	if !w.ensureGroup(ctx) {
+		return
 	}
 	w.logger.Info("status worker started")
 
 	var nextRecovery time.Time // zero: recover once right at start
 	for ctx.Err() == nil {
 		if !w.now().Before(nextRecovery) {
-			w.recoverOnce(ctx)
+			err := w.recoverOnce(ctx)
 			nextRecovery = w.now().Add(w.cfg.RecoveryInterval)
+			if errors.Is(err, events.ErrNoGroup) && !w.recreateGroup(ctx) {
+				return
+			}
 		}
-		if err := w.readOnce(ctx); err != nil && ctx.Err() == nil {
+
+		err := w.readOnce(ctx)
+		switch {
+		case err == nil || ctx.Err() != nil:
+		case errors.Is(err, events.ErrNoGroup):
+			if !w.recreateGroup(ctx) {
+				return
+			}
+		case errors.Is(err, errHandlerFailed):
+			w.waitUntilHealthy(ctx)
+		default:
 			w.logger.Error("reading the status stream failed; backing off", "err", err)
 			w.sleep(ctx, w.cfg.RetryDelay)
 		}
 	}
 }
 
-// readOnce reads one batch of new entries and processes them in order.
+// ensureGroup retries until the group exists; it reports false when ctx ended first.
+func (w *Worker) ensureGroup(ctx context.Context) bool {
+	for {
+		err := w.src.EnsureGroup(ctx)
+		if err == nil {
+			return true
+		}
+		w.logger.Error("cannot create the status consumer group; retrying", "err", err)
+		if !w.sleep(ctx, w.cfg.RetryDelay) {
+			return false
+		}
+	}
+}
+
+// recreateGroup handles a group that vanished while running (Redis restarted without it in its
+// snapshot, the stream was deleted). The group is created at ID 0; replaying older entries is
+// safe because the CAS in the store turns stale and duplicate events into no-ops.
+func (w *Worker) recreateGroup(ctx context.Context) bool {
+	w.logger.Warn("the status consumer group disappeared; creating it again")
+	return w.ensureGroup(ctx)
+}
+
+// waitUntilHealthy pauses reading after a failed handle until the store can take a write
+// again. Reading on would only move the rest of the stream into the pending list, where each
+// entry then starts the poison clock for an outage that is not its fault.
+func (w *Worker) waitUntilHealthy(ctx context.Context) {
+	checker, ok := w.handler.(healthChecker)
+	if !ok {
+		w.sleep(ctx, w.cfg.RetryDelay)
+		return
+	}
+	logged := false
+	for ctx.Err() == nil {
+		err := checker.Healthy(ctx)
+		if err == nil {
+			if logged {
+				w.logger.Info("the store accepts writes again; resuming")
+			}
+			return
+		}
+		if !logged {
+			w.logger.Warn("the store cannot take writes; pausing reads until it can", "err", err)
+			logged = true
+		}
+		w.sleep(ctx, w.cfg.RetryDelay)
+	}
+}
+
+// readOnce reads one batch of new entries and processes them in order. It stops at the first
+// entry the handler could not finish and reports errHandlerFailed: the entries after it stay
+// unread rather than being delivered once and left pending.
 func (w *Worker) readOnce(ctx context.Context) error {
-	block := min(w.cfg.ReadBlock, w.cfg.RecoveryInterval)
+	// go-redis turns a block under 1ms into BLOCK 0, which waits forever.
+	block := max(min(w.cfg.ReadBlock, w.cfg.RecoveryInterval), time.Millisecond)
 	entries, err := w.src.ReadNew(ctx, w.id, block, w.cfg.BatchSize)
 	if err != nil {
 		return err
 	}
 	for _, e := range entries {
-		w.process(ctx, e)
+		if ctx.Err() != nil {
+			return nil // shutting down: what is left stays pending and is reclaimed later
+		}
+		if !w.process(ctx, e) {
+			return errHandlerFailed
+		}
 	}
 	return nil
 }
 
 // recoverOnce takes over entries another (dead) consumer left pending, drops the ones that
-// have been delivered too often, processes the rest, and deletes consumers that are gone.
-func (w *Worker) recoverOnce(ctx context.Context) {
-	entries, err := w.src.ClaimStale(ctx, w.id, w.cfg.MinIdle, w.cfg.BatchSize)
-	if err != nil {
-		w.logger.Error("claiming stale status entries failed", "err", err)
-	}
-	for _, e := range entries {
-		if ctx.Err() != nil {
-			return
-		}
-		deliveries, err := w.src.DeliveryCount(ctx, e.ID)
-		if err != nil {
-			// Neither ack (it may be a good event) nor handle (it may be poison): the entry
-			// stays pending and is reclaimed on a later pass.
-			w.logger.Error("reading the delivery count failed; leaving the entry pending", "entry", e.ID, "err", err)
-			continue
-		}
-		if deliveries > w.cfg.PoisonThreshold {
-			// The center cannot publish a FAILED event for itself; the document stays
-			// PROCESSING until the reconciliation sweep (backlog B2) repairs it.
-			w.logger.Error("dropping poison status entry", "entry", e.ID, "deliveries", deliveries,
-				"threshold", w.cfg.PoisonThreshold, "values", e.Values)
-			w.ack(ctx, e.ID)
-			continue
-		}
-		w.process(ctx, e)
+// have been delivered too often, processes the rest, and deletes consumers that are gone. It
+// returns the claim error so Run can notice a vanished group.
+func (w *Worker) recoverOnce(ctx context.Context) error {
+	var claimErr error
+	if w.storeHealthy(ctx) {
+		claimErr = w.claimAndProcess(ctx)
 	}
 
 	deleted, err := w.src.CleanupConsumers(ctx, w.id, w.cfg.CleanupIdle)
@@ -166,12 +219,70 @@ func (w *Worker) recoverOnce(ctx context.Context) {
 	if len(deleted) > 0 {
 		w.logger.Info("deleted idle consumers", "consumers", deleted)
 	}
+	return claimErr
 }
 
-func (w *Worker) process(ctx context.Context, e events.StreamEntry) {
-	if w.handler.Handle(ctx, e) {
-		w.ack(ctx, e.ID)
+// storeHealthy gates claiming: a claim bumps the delivery count, and while the store cannot
+// take writes that would only push good entries toward the poison threshold.
+func (w *Worker) storeHealthy(ctx context.Context) bool {
+	checker, ok := w.handler.(healthChecker)
+	if !ok {
+		return true
 	}
+	if err := checker.Healthy(ctx); err != nil {
+		w.logger.Warn("the store cannot take writes; skipping the recovery claim", "err", err)
+		return false
+	}
+	return true
+}
+
+// claimAndProcess claims in rounds while batches come back full (bounded), so a backlog does
+// not take one batch per interval to drain.
+func (w *Worker) claimAndProcess(ctx context.Context) error {
+	for round := 0; round < maxRecoveryRounds; round++ {
+		entries, err := w.src.ClaimStale(ctx, w.id, w.cfg.MinIdle, w.cfg.BatchSize)
+		if err != nil {
+			w.logger.Error("claiming stale status entries failed", "err", err)
+			return err
+		}
+		for _, e := range entries {
+			if ctx.Err() != nil {
+				return nil
+			}
+			deliveries, err := w.src.DeliveryCount(ctx, e.ID)
+			if err != nil {
+				// Neither ack (it may be a good event) nor handle (it may be poison): the entry
+				// stays pending and is reclaimed on a later pass.
+				w.logger.Error("reading the delivery count failed; leaving the entry pending", "entry", e.ID, "err", err)
+				continue
+			}
+			if deliveries > w.cfg.PoisonThreshold {
+				// The center cannot publish a FAILED event for itself; the document stays
+				// PROCESSING until the reconciliation sweep (backlog B2) repairs it.
+				w.logger.Error("dropping poison status entry", "entry", e.ID, "deliveries", deliveries,
+					"threshold", w.cfg.PoisonThreshold, "values", e.Values)
+				w.ack(ctx, e.ID)
+				continue
+			}
+			if !w.process(ctx, e) {
+				return nil // the store is failing: stop claiming, the entries stay pending
+			}
+		}
+		if int64(len(entries)) < w.cfg.BatchSize {
+			return nil
+		}
+	}
+	return nil
+}
+
+// process hands the entry to the handler and acknowledges it when it is finished. It reports
+// whether the entry was finished.
+func (w *Worker) process(ctx context.Context, e events.StreamEntry) bool {
+	if !w.handler.Handle(ctx, e) {
+		return false
+	}
+	w.ack(ctx, e.ID)
+	return true
 }
 
 // ack runs on a context that survives shutdown: the entry is already handled, and leaving it
