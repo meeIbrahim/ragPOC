@@ -22,6 +22,9 @@ def get_client() -> QdrantClient:
 
 
 def close_client() -> None:
-    """Close the process-wide client if one was built. It never builds one just to close it."""
+    """Close the process-wide client if one was built. It never builds one just to close it, and
+    it drops the closed client from the cache so a later get_client() builds a fresh one."""
     if get_client.cache_info().currsize:
-        get_client().close()
+        client = get_client()
+        get_client.cache_clear()
+        client.close()

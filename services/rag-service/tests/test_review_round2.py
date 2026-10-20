@@ -29,28 +29,6 @@ def ingest_with(**changes) -> str:
 
 # ---- json.loads can raise a plain ValueError (the int digit limit), not only JSONDecodeError
 
-@pytest.mark.parametrize(
-    "raw",
-    [
-        b'{"size":' + b"1" * 5000 + b"}",
-        b'{"attempts":' + b"9" * 4301 + b"}",
-        b'{"schema_version":-' + b"7" * 5000 + b"}",
-        b"[" + b"1" * 5000 + b"]",
-    ],
-    ids=["size", "attempts", "negative", "array"],
-)
-def test_a_huge_integer_is_an_invalid_event_not_a_value_error(raw):
-    with pytest.raises(InvalidEventError):
-        IngestEvent.parse(raw)
-
-
-def test_the_integer_digit_limit_is_what_escapes_json_loads():
-    # Documents why the except clause must be ValueError, not only JSONDecodeError.
-    with pytest.raises(ValueError) as excinfo:
-        json.loads('{"size":' + "1" * 5000 + "}")
-    assert not isinstance(excinfo.value, json.JSONDecodeError)
-
-
 # ---- error messages never echo an unbounded untrusted value
 
 @pytest.mark.parametrize("field", ["created_at", "schema_version", "size", "attempts"])

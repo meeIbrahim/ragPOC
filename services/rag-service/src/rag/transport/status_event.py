@@ -61,7 +61,16 @@ _MAX_ECHO = 64
 
 
 def _clip(value: Any) -> str:
-    text = repr(value)
+    """A bounded description of an untrusted value for an error message. It must never raise
+    itself: that would replace the error it was written to report."""
+    try:
+        if isinstance(value, int) and not isinstance(value, bool) and value.bit_length() > 256:
+            return f"<int of {value.bit_length()} bits>"  # repr() of a huge int can raise ValueError
+        if isinstance(value, (str, bytes)) and len(value) > _MAX_ECHO:
+            return repr(value[:_MAX_ECHO])[:-1] + "..."  # do not build the repr of a 10 MB string
+        text = repr(value)
+    except Exception:
+        return f"<unprintable {type(value).__name__}>"
     return text if len(text) <= _MAX_ECHO else text[:_MAX_ECHO] + "..."
 
 
@@ -133,6 +142,12 @@ class IngestEvent:
             value = field_of(name)
             if not isinstance(value, str) or value == "":
                 raise InvalidEventError(f"{name} must be a non-empty string")
+            try:
+                value.encode("utf-8")
+            except UnicodeEncodeError:
+                # A lone surrogate is schema-valid JSON, but SQLite cannot store it and Go reads
+                # it back as U+FFFD, so the value would not match across the two services.
+                raise InvalidEventError(f"{name} must be valid unicode text") from None
             return value
 
         version = field_of("schema_version")
