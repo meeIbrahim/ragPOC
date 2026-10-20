@@ -1,5 +1,10 @@
 """Shared test fixtures data."""
 
+import json
+from pathlib import Path
+
+from rag.transport.status_event import IngestEvent
+
 VALID_TOML = """
 [minio]
 url="localhost:9000"
@@ -63,16 +68,10 @@ consumer_cleanup_idle="1h"
 
 # ---- a real ingest event, parsed from the Go-generated fixture
 
-from pathlib import Path  # noqa: E402
-
-from rag.transport.status_event import IngestEvent  # noqa: E402
-
 FIXTURE_DIR = Path(__file__).resolve().parents[3] / "contracts" / "events" / "fixtures"
 
 
 def ingest_event(**changes) -> IngestEvent:
     """The Go ingest fixture, optionally with fields replaced (attempts, hash, filename...)."""
-    import json
-
     document = json.loads((FIXTURE_DIR / "ingest_event.json").read_text()) | changes
     return IngestEvent.parse(json.dumps(document))

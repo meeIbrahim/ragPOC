@@ -15,6 +15,11 @@ Design rules, several of them learned from the Go status worker:
   outage never turns into a silently dropped event.
 - A failing entry never holds back the next one.
 - A consumer group that vanished (Redis restarted without it in its snapshot) is created again.
+- When only publishing fails (Redis at maxmemory refuses XADD but still serves reads and claims),
+  stop reading and claiming and retry the held status until it goes through. Reading on would
+  run jobs whose results cannot be reported, and every later claim would add a delivery to
+  entries that are blameless, until they were reported as poison.
+- No single entry may take the loop down: an unexpected error is logged and the loop carries on.
 """
 
 from __future__ import annotations
@@ -64,6 +69,9 @@ class ConsumerSettings:
     read_block: timedelta = timedelta(seconds=2)
     retry_delay: float = 1.0
     publish_attempts: int = 3
+    # Seconds one Redis call may take. A new publish attempt only starts while a whole call still
+    # fits before min_idle, or another consumer could reclaim and re-run the entry meanwhile.
+    call_timeout: float = 60.0
     # Jobs run from one recovery pass before the loop goes back to reading new entries.
     max_recovery_jobs: int = 10
 
@@ -78,6 +86,7 @@ class ConsumerSettings:
             poison_threshold=consumer.poison_threshold,
             cleanup_idle=consumer.consumer_cleanup_idle,
             job_timeout=consumer.job_timeout,
+            call_timeout=config.rag.call_timeout.total_seconds(),
         )
 
 
@@ -114,6 +123,8 @@ class StreamConsumer:
         self._watchdog = watchdog
         self.name = name or new_consumer_name()
         self._clock = clock
+        # (entry id, status) whose publish failed: no reading or claiming until it goes through.
+        self._held: tuple[str, StatusEvent] | None = None
         self._stop = threading.Event()
         # sleep(seconds) -> True when the full wait happened, False when stop() cut it short.
         self._sleep = sleep or (lambda seconds: not self._stop.wait(seconds))
@@ -155,9 +166,15 @@ class StreamConsumer:
 
         next_recovery = 0.0  # recover once right at start
         while not self._stop.is_set():
+            if self._held is not None:
+                if not self._retry_held():
+                    self._sleep(self._settings.retry_delay)
+                continue
             if self._clock() >= next_recovery:
                 self._guarded(self.recover_once)
                 next_recovery = self._clock() + self._settings.recovery_interval.total_seconds()
+                if self._held is not None:
+                    continue  # recovery just failed to publish: retry that before reading anything
             self._guarded(self.read_once)
         logger.info("ingest consumer %s stopped", self.name)
 
@@ -172,6 +189,11 @@ class StreamConsumer:
                 self._ensure_group_until_ready()
                 return
             logger.error("redis error; backing off: %s", _clip(exc))
+            self._sleep(self._settings.retry_delay)
+        except Exception:
+            # Not a Redis error: a reply that could not be decoded, an entry of an unexpected
+            # shape. Crashing would restart into the same entry again and again; log and carry on.
+            logger.exception("unexpected error while handling the stream; backing off")
             self._sleep(self._settings.retry_delay)
 
     # ---- new entries
@@ -196,10 +218,10 @@ class StreamConsumer:
         """Take over entries a dead consumer left pending, one at a time, then delete consumers
         that are gone. Raises the claim error (if any) after cleanup so the loop can notice a
         vanished group."""
-        claim_error: RedisError | None = None
+        claim_error: Exception | None = None
         try:
             self._claim_and_process()
-        except RedisError as exc:
+        except Exception as exc:
             claim_error = exc
         self._cleanup_consumers()
         if claim_error is not None:
@@ -215,16 +237,23 @@ class StreamConsumer:
             if event is None:
                 continue
             try:
-                deliveries = self._delivery_count(entry_id)
+                pending = self._pending_info(entry_id)
             except RedisError as exc:
                 # Neither ack (it may be a good event) nor process (it may be poison): it stays
                 # pending and is reclaimed on a later pass.
                 logger.error("cannot read the delivery count of %s; leaving it pending: %s", entry_id, _clip(exc))
                 continue
+            if pending is None or pending[1] != self.name:
+                # Acked by its original owner, or claimed by someone else, since our claim.
+                logger.warning("entry %s is no longer pending under this consumer; skipping it", entry_id)
+                continue
+            deliveries = pending[0]
             if deliveries > self._settings.poison_threshold:
                 self._report_poison(entry_id, event, deliveries)
             else:
                 self._handle(entry_id, event)
+            if self._held is not None:
+                return  # publishing is down: claim nothing more, the counts must not grow
 
     def _claim_one(self) -> tuple[str, dict[str, str] | None] | None:
         """XAUTOCLAIM with count=1 and no JUSTID: the delivery count must increment and the
@@ -253,11 +282,14 @@ class StreamConsumer:
             cursor = next_cursor
         return None
 
-    def _delivery_count(self, entry_id: str) -> int:
+    def _pending_info(self, entry_id: str) -> tuple[int, str] | None:
+        """(times delivered, owning consumer) of a pending entry, or None when it is not pending."""
         pending = self._redis.xpending_range(
             self._settings.stream, self._settings.group, min=entry_id, max=entry_id, count=1
         )
-        return int(pending[0]["times_delivered"]) if pending else 0
+        if not pending:
+            return None
+        return int(pending[0]["times_delivered"]), pending[0]["consumer"]
 
     def _report_poison(self, entry_id: str, event: IngestEvent, deliveries: int) -> None:
         """An entry delivered too often: report it as a permanent failure, echoing the attempt
@@ -270,8 +302,7 @@ class StreamConsumer:
             reason=Reason.POISON_MESSAGE,
             detail=f"delivered {deliveries} times, threshold {self._settings.poison_threshold}",
         )
-        if self._publish(status):
-            self._ack(entry_id)
+        self._finish(entry_id, status, started=self._clock())
 
     def _cleanup_consumers(self) -> None:
         """Delete consumers other than this one with no pending entries that have been idle past
@@ -313,14 +344,35 @@ class StreamConsumer:
 
     def _handle(self, entry_id: str, event: IngestEvent) -> bool:
         """Run the job, publish its status, acknowledge. Returns whether the entry was finished."""
+        started = self._clock()  # the entry's idle time starts just before this
         deadline = Deadline.after(self._settings.job_timeout.total_seconds())
         self._watchdog.arm()
         try:
             outcome = run_job(self._processor, event, deadline)
         finally:
             self._watchdog.disarm()
-        if not self._publish(self._status_for(event, outcome)):
+        return self._finish(entry_id, self._status_for(event, outcome), started)
+
+    def _finish(self, entry_id: str, status: StatusEvent, started: float) -> bool:
+        """Publish the status, then acknowledge. When the publish cannot be done the entry and its
+        status are held: nothing else is read or claimed until they go through."""
+        if self._publish(status, started):
+            self._ack(entry_id)
+            return True
+        self._held = (entry_id, status)
+        return False
+
+    def _retry_held(self) -> bool:
+        """One more try at the held status. The job already ran and is not run again."""
+        assert self._held is not None
+        entry_id, status = self._held
+        try:
+            self._publisher.publish(status)
+        except RedisError as exc:
+            logger.warning("status for %s still cannot be published: %s", entry_id, _clip(exc))
             return False
+        self._held = None
+        logger.info("the held status for %s was published; resuming", entry_id)
         self._ack(entry_id)
         return True
 
@@ -334,19 +386,26 @@ class StreamConsumer:
             event.hash, event.attempts, retryable=outcome.retryable, reason=outcome.reason, detail=outcome.detail
         )
 
-    def _publish(self, status: StatusEvent) -> bool:
-        """Publish with a few quick retries. False means the entry must stay pending: it is
-        redelivered after min_idle, and the center's CAS makes the repeat harmless."""
+    def _publish(self, status: StatusEvent, started: float) -> bool:
+        """Publish with a few quick retries. False means the caller must hold the entry.
+
+        The first attempt always happens. A further one only starts while a whole call_timeout
+        still fits before min_idle, counted from `started`: past that the entry could be
+        reclaimed and run again by another consumer, which is the one thing min_idle is for."""
         attempts = self._settings.publish_attempts
+        reclaimable_at = started + self._settings.min_idle.total_seconds()
         for attempt in range(attempts):
             try:
                 self._publisher.publish(status)
                 return True
             except RedisError as exc:
                 logger.warning("publishing the status event failed (try %d of %d): %s", attempt + 1, attempts, _clip(exc))
-            if attempt + 1 < attempts and not self._sleep(self._settings.retry_delay):
+            if attempt + 1 >= attempts or not self._sleep(self._settings.retry_delay):
                 break
-        logger.error("could not publish the status event for %s; leaving the entry pending", status.hash)
+            if self._clock() + self._settings.call_timeout >= reclaimable_at:
+                logger.warning("no time left to retry the publish before the entry becomes reclaimable")
+                break
+        logger.error("could not publish the status event for %s; holding the entry", status.hash)
         return False
 
     def _ack(self, entry_id: str) -> None:

@@ -6,7 +6,7 @@ import logging
 from dataclasses import dataclass
 from typing import Protocol
 
-from rag.ingest.errors import PermanentError, TransientError
+from rag.ingest.errors import IngestError, PermanentError, TransientError
 from rag.transport.status_event import IngestEvent, Reason
 from rag.transport.watchdog import Deadline
 
@@ -44,6 +44,8 @@ def run_job(processor: Processor, event: IngestEvent, deadline: Deadline) -> Out
     except PermanentError as exc:
         return Failed(False, exc.reason, exc.detail)
     except TransientError as exc:
+        return Failed(True, exc.reason, exc.detail)
+    except IngestError as exc:  # unclassified, but it still knows why: retry, keep the reason
         return Failed(True, exc.reason, exc.detail)
     except Exception as exc:
         logger.exception("ingest job failed with an unclassified error")

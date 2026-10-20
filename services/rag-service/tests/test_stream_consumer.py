@@ -30,6 +30,7 @@ SETTINGS = ConsumerSettings(
     read_block=timedelta(seconds=2),
     retry_delay=0.001,
     publish_attempts=3,
+    call_timeout=1.0,
 )
 
 
@@ -40,6 +41,10 @@ def payload(attempts=0, **changes) -> str:
 
 def entry(entry_id="1-0", attempts=0, **changes):
     return (entry_id, {"event_type": "IngestionRequest", "payload": payload(attempts, **changes)})
+
+
+class RunawayLoop(BaseException):
+    """A consumer loop that never stopped. A BaseException, so no handler under test swallows it."""
 
 
 class Crashed(BaseException):
@@ -56,8 +61,11 @@ class FakeRedis:
         self.claims = []
         self.xadd_errors = []
         self.ack_errors = []
-        self.pending = {}  # entry id -> times_delivered
+        self.pending = {}  # entry id -> times_delivered (a claimed entry defaults to 2)
+        self.gone = set()  # ids another consumer acked between our claim and the XPENDING
+        self.pending_owner = "host/ingest/test"
         self.pending_error = None
+        self.pending_errors = []  # raised once each, one per XPENDING call
         self.consumers = []
         self.xadd_calls = []
         self.kwargs = {}
@@ -77,6 +85,9 @@ class FakeRedis:
         self._next(self.group_errors, None)
 
     def xreadgroup(self, groupname, consumername, streams, count=None, block=None, **kw):
+        self.read_calls = getattr(self, "read_calls", 0) + 1
+        if self.read_calls > 5000:
+            raise RunawayLoop("the consumer loop never stopped")
         self.log.append(f"read:{consumername}:{list(streams.values())[0]}:count={count}:block={block}")
         self.kwargs["read"] = {"count": count, "block": block, "streams": streams}
         return self._next(self.reads, [])
@@ -88,11 +99,16 @@ class FakeRedis:
 
     def xpending_range(self, name, groupname, min, max, count, consumername=None, idle=None):
         self.log.append(f"pending:{min}")
+        if self.pending_errors:
+            raise self.pending_errors.pop(0)
         if self.pending_error:
             raise self.pending_error
-        if min not in self.pending:
+        if min in self.gone:
             return []
-        return [{"message_id": min, "consumer": "x", "time_since_delivered": 0, "times_delivered": self.pending[min]}]
+        return [{
+            "message_id": min, "consumer": self.pending_owner, "time_since_delivered": 0,
+            "times_delivered": self.pending.get(min, 2),
+        }]
 
     def xack(self, name, groupname, *ids):
         self.log.append(f"ack:{','.join(ids)}")
@@ -152,6 +168,8 @@ def build(redis=None, outcome=Indexed(0), settings=SETTINGS, sleeps=None):
 
     def sleep(seconds):
         sleeps.append(seconds)
+        if len(sleeps) > 5000:
+            raise RunawayLoop("the consumer kept sleeping and never stopped")
         return not consumer._stop.is_set()
 
     consumer = StreamConsumer(
@@ -402,17 +420,15 @@ def test_recovery_is_bounded_per_pass_so_new_entries_are_still_read():
     assert len(processor.events) == SETTINGS.max_recovery_jobs
 
 
-def test_a_failing_claimed_entry_does_not_block_the_next_one():
-    # The Go worker lost events by abandoning the rest of a batch after one failure. Here one
-    # entry's publish fails; its successor must still be handled and acknowledged.
+def test_an_entry_whose_delivery_count_cannot_be_read_does_not_block_the_next_one():
+    # The Go worker lost events by abandoning the rest of a batch after one failure. An entry
+    # that cannot be judged stays pending alone; its successor is still claimed and handled.
     consumer, redis, processor, *_ = build()
-    redis.pending = {"1-0": 2, "2-0": 2}
+    redis.pending_errors = [RedisConnectionError("blip")]
     redis.claims = [["0-0", [entry("1-0")]], ["0-0", [entry("2-0")]], ["0-0", []]]
-    redis.xadd_errors = [RedisConnectionError("x")] * 3  # all three tries for the first entry
     consumer.recover_once()
-    assert len(processor.events) == 2
-    acks = [e for e in redis.log if e.startswith("ack")]
-    assert acks == ["ack:2-0"]
+    assert [e.attempts for e in processor.events] == [0]
+    assert [e for e in redis.log if e.startswith("ack")] == ["ack:2-0"]
 
 
 def test_deleted_entries_reported_by_xautoclaim_are_logged(caplog):
@@ -565,7 +581,7 @@ def test_recovery_repeats_every_interval():
     redis.xreadgroup = read
     consumer.run()
     claims = len([e for e in redis.log if e.startswith("claim")])
-    assert claims >= 3  # at start, then at 2s and 4s of a 7s run
+    assert claims == 4  # at t=0, then at 2s, 4s and 6s of the run
 
 
 def test_a_read_error_backs_off_and_the_loop_continues():
@@ -602,3 +618,162 @@ def test_other_response_errors_are_not_mistaken_for_a_lost_group():
     consumer, redis, *_ = build()
     drive(consumer, redis, [ResponseError("OOM command not allowed")])
     assert len([e for e in redis.log if e.startswith("group_create")]) == 1
+
+
+# =====================================================================================
+# Review round 1: hostile entries, bounded retries, pausing when publishing is down
+# =====================================================================================
+
+from rag.ingest.errors import IngestError  # noqa: E402
+from rag.ingest.outcome import run_job  # noqa: E402
+
+
+# ---- the delivery count must belong to an entry we still own
+
+def test_an_entry_acked_by_someone_else_after_the_claim_is_skipped():
+    consumer, redis, processor, *_ = build()
+    redis.gone = {"1-0"}
+    redis.claims = [["0-0", [entry("1-0")]], ["0-0", []]]
+    consumer.recover_once()
+    assert processor.events == [] and not any(e.startswith("ack") for e in redis.log)
+
+
+def test_an_entry_owned_by_another_consumer_is_skipped():
+    consumer, redis, processor, *_ = build()
+    redis.pending_owner = "someone-else"
+    redis.claims = [["0-0", [entry("1-0")]], ["0-0", []]]
+    consumer.recover_once()
+    assert processor.events == []
+
+
+# ---- nothing unexpected inside one entry's handling may take the loop down
+
+def test_a_malformed_entry_shape_does_not_kill_the_loop():
+    consumer, redis, processor, *_ = build()
+    drive(consumer, redis, [[[STREAM, [("1-0", 5)]]], [[STREAM, [entry("2-0")]]]])  # fields is an int
+    assert [e.attempts for e in processor.events] == [0]  # the next entry was still handled
+    assert "ack:2-0" in redis.log
+
+
+def test_a_decode_error_from_the_client_is_retried_not_fatal():
+    # redis-py raises UnicodeDecodeError (a ValueError) while decoding a reply with bad bytes.
+    consumer, redis, processor, _, sleeps = build()
+    drive(consumer, redis, [UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"), [[STREAM, [entry("1-0")]]]])
+    assert len(processor.events) == 1 and sleeps
+
+
+def test_a_decode_error_during_a_claim_does_not_kill_the_loop():
+    consumer, redis, processor, *_ = build()
+    redis.claims = [UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")]
+    drive(consumer, redis, [[[STREAM, [entry("1-0")]]]])
+    assert len(processor.events) == 1  # reading carried on after the failed recovery pass
+
+
+def test_a_process_exit_inside_the_job_is_still_not_swallowed():
+    consumer, redis, *_ = build(outcome=Crashed())
+    redis.reads = [[[STREAM, [entry("1-0")]]]]
+    with pytest.raises(Crashed):
+        consumer.run()
+
+
+# ---- redis-py's own retries must not be what bounds publishing
+
+def test_publishing_stops_retrying_when_the_entry_would_become_reclaimable():
+    # The entry's idle time starts at its delivery. A new publish attempt may only start while a
+    # whole call_timeout still fits before min_idle, or a second consumer could reclaim and re-run it.
+    settings = ConsumerSettings(**{**SETTINGS.__dict__, "min_idle": timedelta(seconds=10), "call_timeout": 1.0, "publish_attempts": 5})
+    now = {"t": 0.0}
+    redis = FakeRedis()
+    redis.xadd_errors = [RedisConnectionError("down")] * 20
+    redis.reads = [[[STREAM, [entry("1-0")]]]]
+    consumer, *_ = build(redis, settings=settings)
+    consumer._clock = lambda: now["t"]
+
+    def sleep(seconds):
+        now["t"] += 5.0
+        return True
+
+    consumer._sleep = sleep
+    consumer.read_once()
+    attempts = len([e for e in redis.log if e.startswith("xadd")])
+    assert attempts == 2  # t=0 and t=5 start; t=10 would leave no room for a call before min_idle
+
+
+def test_the_first_publish_attempt_is_always_made():
+    settings = ConsumerSettings(**{**SETTINGS.__dict__, "min_idle": timedelta(seconds=1), "call_timeout": 60.0})
+    consumer, redis, *_ = build(settings=settings)
+    redis.reads = [[[STREAM, [entry("1-0")]]]]
+    consumer.read_once()
+    assert len(published(redis)) == 1 and "ack:1-0" in redis.log
+
+
+# ---- when only publishing fails, stop reading and claiming (counts must not grow)
+
+def pause_script(failures):
+    consumer, redis, processor, _, sleeps = build()
+    redis.xadd_errors = [RedisConnectionError("OOM command not allowed when used memory > 'maxmemory'")] * failures
+    return consumer, redis, processor, sleeps
+
+
+def test_a_publish_that_keeps_failing_pauses_reading_until_it_works():
+    consumer, redis, processor, sleeps = pause_script(5)  # 3 tries, then 2 more while held
+    drive(consumer, redis, [[[STREAM, [entry("1-0")]]], [[STREAM, [entry("2-0")]]]])
+    log = redis.log
+    first_fail = log.index(f"xadd:{STATUS_STREAM}")
+    ack_first = log.index("ack:1-0")
+    between = log[first_fail:ack_first]
+    assert not any(e.startswith(("read", "claim")) for e in between), between
+    assert len(published(redis)) == 2  # the held outcome for 1-0, then the next entry's
+    assert log.index("ack:1-0") < log.index("process:0", log.index("ack:1-0") + 1)
+
+
+def test_the_held_entry_is_not_processed_again_while_waiting():
+    consumer, redis, processor, _ = pause_script(4)
+    drive(consumer, redis, [[[STREAM, [entry("1-0")]]]])
+    assert len(processor.events) == 1  # the job ran once; only its status was retried
+
+
+def test_recovery_claims_nothing_while_a_status_is_held():
+    consumer, redis, processor, _ = pause_script(3)
+    redis.claims = [["0-0", [entry("1-0")]], ["0-0", [entry("2-0")]]]
+    redis.pending = {"1-0": 2, "2-0": 2}
+    consumer.recover_once()
+    assert len(processor.events) == 1  # 1-0 ran and its publish failed; 2-0 was not even claimed
+    assert len([e for e in redis.log if e.startswith("claim")]) == 1
+
+
+def test_a_held_poison_report_is_retried_before_anything_else():
+    consumer, redis, processor, _ = pause_script(4)
+    redis.pending = {"1-0": 9}
+    redis.claims = [["0-0", [entry("1-0", attempts=1)]], ["0-0", []]]
+    drive(consumer, redis, [])
+    statuses = published(redis)
+    assert len(statuses) == 1 and statuses[0]["reason"] == "POISON_MESSAGE" and statuses[0]["attempts"] == 1
+    assert "ack:1-0" in redis.log and processor.events == []
+
+
+def test_stop_ends_the_pause():
+    consumer, redis, processor, _ = pause_script(10_000)
+    redis.reads = [[[STREAM, [entry("1-0")]]]]
+    original = consumer._sleep
+    calls = {"n": 0}
+
+    def sleep(seconds):
+        calls["n"] += 1
+        if calls["n"] > 8:
+            consumer.stop()
+        return original(seconds)
+
+    consumer._sleep = sleep
+    consumer.run()  # must return although publishing never works
+    assert not any(e.startswith("ack") for e in redis.log)
+
+
+# ---- a bare IngestError keeps its reason
+
+def test_a_base_ingest_error_keeps_its_reason_and_is_retryable():
+    class Raises:
+        def process(self, event, deadline):
+            raise IngestError(Reason.EMPTY_TEXT, "no text")
+
+    assert run_job(Raises(), None, None) == Failed(True, Reason.EMPTY_TEXT, "no text")

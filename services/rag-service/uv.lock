@@ -1070,7 +1070,7 @@ requires-dist = [
     { name = "ollama", specifier = ">=0.6.2" },
     { name = "pypdf", specifier = ">=6.16.1" },
     { name = "qdrant-client", specifier = ">=1.16.1" },
-    { name = "redis", specifier = ">=5.0.0" },
+    { name = "redis", specifier = ">=8,<9" },
 ]
 
 [package.metadata.requires-dev]

@@ -16,6 +16,8 @@ import sys
 from collections.abc import Sequence
 
 from redis import Redis
+from redis.backoff import NoBackoff
+from redis.retry import Retry
 
 from rag.core import config_reader, logging_setup
 from rag.ingest.stub import Mode, StubProcessor
@@ -55,6 +57,35 @@ def _resolve_mode(flag: str | None) -> Mode | None:
         return None
 
 
+def make_redis(config: config_reader.Config, *, host: str | None = None, port: int | None = None) -> Redis:
+    """The Redis client, built for a consumer that must survive whatever is in the stream.
+
+    - encoding_errors="replace": a stream entry with bytes that are not UTF-8 would otherwise
+      raise UnicodeDecodeError while the reply is decoded, before the consumer sees the entry, so
+      it could never be acknowledged and would crash the process again at every reclaim. With
+      replacement it fails validation and is acknowledged like any other bad entry.
+    - retry with zero retries: redis-py's default is 10 retries with backoff, which would let one
+      XADD take minutes after the watchdog is disarmed (the entry could be reclaimed and re-run
+      meanwhile) and would re-send a timed-out XAUTOCLAIM, bumping a delivery count twice. The
+      consumer's own bounded retries are the only ones.
+    - protocol=2: the consumer relies on the RESP2 reply shapes (RESP3 returns dicts for XREADGROUP).
+    - the read timeout outlasts the longest BLOCK, so a quiet stream is never mistaken for a dead
+      connection, even when call_timeout is configured very small.
+    """
+    call_timeout = config.rag.call_timeout.total_seconds()
+    read_block = ConsumerSettings.from_config(config).read_block.total_seconds()
+    return Redis(
+        host=host or config.redis.host,
+        port=port or config.redis.port,
+        decode_responses=True,
+        encoding_errors="replace",
+        protocol=2,
+        retry=Retry(NoBackoff(), 0),
+        socket_timeout=max(call_timeout, read_block + 5),
+        socket_connect_timeout=call_timeout,
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     logging_setup.configure()
     try:
@@ -73,16 +104,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     config_reader.warn_unknown_keys(config, logger)
 
     consumer_config = config.rag.consumer
-    call_timeout = config.rag.call_timeout.total_seconds()
-    redis = Redis(
-        host=config.redis.host,
-        port=config.redis.port,
-        decode_responses=True,
-        # Reads outlast the longest BLOCK (never more than the recovery interval), so a quiet
-        # stream is not mistaken for a dead connection.
-        socket_timeout=call_timeout,
-        socket_connect_timeout=call_timeout,
-    )
+    redis = make_redis(config)
     consumer = StreamConsumer(
         redis,
         ConsumerSettings.from_config(config),

@@ -119,15 +119,17 @@ def test_a_job_that_asks_the_process_to_stop_is_not_swallowed():
 
 # ---- Watchdog (T-P11)
 
-def test_watchdog_exits_the_process_when_a_job_runs_past_its_limit(caplog):
+def test_watchdog_exits_the_process_when_a_job_runs_past_its_limit(monkeypatch):
+    written = []
+    monkeypatch.setattr("rag.transport.watchdog.os.write", lambda fd, data: written.append((fd, data)))
     fired = threading.Event()
     codes = []
     watchdog = Watchdog(0.05, exit_fn=lambda code: (codes.append(code), fired.set()))
-    with caplog.at_level(logging.ERROR):
-        watchdog.arm()
-        assert fired.wait(2), "the watchdog never fired"
+    watchdog.arm()
+    assert fired.wait(2), "the watchdog never fired"
     assert codes == [1]
-    assert "watchdog" in caplog.text.lower()
+    # The last words go to fd 2 directly: logging takes a lock the stuck main thread may hold.
+    assert written and written[0][0] == 2 and b"watchdog" in written[0][1].lower()
 
 
 def test_watchdog_does_not_fire_when_disarmed_in_time():
@@ -178,3 +180,47 @@ def test_the_watchdog_thread_is_a_daemon_so_it_never_keeps_the_process_alive():
 def test_a_non_positive_timeout_is_rejected():
     with pytest.raises(ValueError):
         Watchdog(0, exit_fn=lambda code: None)
+
+
+# ---- races and robustness (review round 1)
+
+def test_a_stale_timer_never_exits_the_process():
+    # Timer.cancel() does nothing once the callback has started: a disarm (or re-arm) that loses
+    # the race must still win, or the process exits although the job returned.
+    fired = []
+    watchdog = Watchdog(30, exit_fn=fired.append)
+    watchdog.arm()
+    stale = watchdog._generation
+    watchdog.disarm()
+    watchdog._fire(stale)
+    assert fired == []
+
+
+def test_a_timer_from_before_a_re_arm_is_stale():
+    fired = []
+    watchdog = Watchdog(30, exit_fn=fired.append)
+    try:
+        watchdog.arm()
+        first = watchdog._generation
+        watchdog.arm()
+        watchdog._fire(first)
+        assert fired == []
+        watchdog._fire(watchdog._generation)
+        assert fired == [1]
+    finally:
+        watchdog.disarm()
+
+
+def test_the_process_still_exits_when_writing_the_last_words_fails(monkeypatch):
+    def broken(fd, data):
+        raise OSError("stderr is gone")
+
+    monkeypatch.setattr("rag.transport.watchdog.os.write", broken)
+    fired = []
+    watchdog = Watchdog(30, exit_fn=fired.append)
+    try:
+        watchdog.arm()
+        watchdog._fire(watchdog._generation)
+    finally:
+        watchdog.disarm()
+    assert fired == [1]

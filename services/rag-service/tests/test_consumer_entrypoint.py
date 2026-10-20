@@ -177,3 +177,36 @@ def test_the_module_is_runnable_as_a_script():
     spec = importlib.util.find_spec("rag.consumer")
     assert spec is not None
     assert "__main__" in open(spec.origin).read()
+
+
+# ---- the Redis client is hardened (review round 1)
+
+def test_undecodable_bytes_in_an_entry_become_replacement_characters_not_a_crash(wired):
+    entry.main(["--mode", "indexed"])
+    assert FakeRedis.created[0].kwargs["encoding_errors"] == "replace"
+
+
+def test_the_wire_protocol_is_pinned_because_the_consumer_relies_on_its_reply_shapes(wired):
+    entry.main(["--mode", "indexed"])
+    assert FakeRedis.created[0].kwargs["protocol"] == 2
+
+
+def test_redis_py_does_not_retry_on_its_own(wired):
+    # Its default is 10 retries with backoff: one XADD could then take minutes, long after the
+    # watchdog was disarmed, and a re-sent XAUTOCLAIM would bump a delivery count twice.
+    entry.main(["--mode", "indexed"])
+    retry = FakeRedis.created[0].kwargs["retry"]
+    assert retry.get_retries() == 0
+
+
+def test_the_read_timeout_outlasts_the_block_even_for_a_tiny_call_timeout(wired, tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text(path.read_text().replace('call_timeout="60s"', 'call_timeout="1s"'))
+    assert entry.main(["--mode", "indexed", "--config", str(path)]) == 0
+    timeout = FakeRedis.created[0].kwargs["socket_timeout"]
+    assert timeout >= ConsumerSettings.from_config(wired).read_block.total_seconds() + 5
+
+
+def test_the_publish_budget_knows_the_call_timeout(wired):
+    entry.main(["--mode", "indexed"])
+    assert FakeStreamConsumer.instances[0].settings.call_timeout == wired.rag.call_timeout.total_seconds()

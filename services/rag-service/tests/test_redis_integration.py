@@ -218,6 +218,77 @@ def test_the_group_starts_at_zero_so_entries_published_earlier_are_delivered(r, 
         assert wait_for(lambda: r.xlen(status) == 1)
 
 
+# ---- hostile bytes (review round 1: a non-UTF-8 entry crashed the consumer forever)
+
+@pytest.fixture
+def prod(streams):
+    """A client built exactly like the entry point builds it."""
+    from rag.consumer import make_redis
+    from rag.core import config_reader
+
+    host_port = REDIS_URL.split("//", 1)[1].split("/")[0].split(":")
+    config = config_reader.load()
+    client = make_redis(config, host=host_port[0], port=int(host_port[1]))
+    yield client
+    client.close()
+
+
+def add_raw(r, stream, payload: bytes) -> str:
+    raw = redis_lib.Redis.from_url(REDIS_URL)  # bytes in, no decoding
+    try:
+        return raw.xadd(stream, {b"event_type": b"IngestionRequest", b"payload": payload}).decode()
+    finally:
+        raw.close()
+
+
+def test_a_non_utf8_entry_is_acked_without_crashing_on_the_read_path(r, streams, prod):
+    ingest, status = streams
+    add_raw(r, ingest, b"\xff\xfe not json")
+    consumer = StreamConsumer(prod, settings(ingest), StatusPublisher(prod, status, 1000), Processor(), NoWatchdog())
+    consumer.ensure_group()
+    consumer.read_once()  # must not raise UnicodeDecodeError
+    assert r.xpending(ingest, "rag-it")["pending"] == 0
+    assert r.xlen(status) == 0  # an entry that is not an event produces no status
+
+
+def test_a_non_utf8_entry_is_acked_without_crashing_on_the_reclaim_path(r, streams, prod):
+    ingest, status = streams
+    r.xgroup_create(ingest, "rag-it", id="0", mkstream=True)
+    add_raw(r, ingest, b"\xff\xfe")
+    prod.xreadgroup("rag-it", "dead", {ingest: ">"}, count=1)  # the plain `r` client would choke on it
+    time.sleep(0.4)
+    consumer = StreamConsumer(prod, settings(ingest), StatusPublisher(prod, status, 1000), Processor(), NoWatchdog())
+    consumer.recover_once()  # must not raise
+    assert r.xpending(ingest, "rag-it")["pending"] == 0
+
+
+# ---- the poison boundary, exactly (K=3: the 4th delivery)
+
+def reclaim_with(r, streams, extra_claims):
+    ingest, status = streams
+    r.xgroup_create(ingest, "rag-it", id="0", mkstream=True)
+    entry_id = add_ingest(r, ingest, attempts=1)
+    r.xreadgroup("rag-it", "dead", {ingest: ">"}, count=1)  # delivery 1
+    for _ in range(extra_claims):
+        r.xclaim(ingest, "rag-it", "dead", 0, [entry_id])  # deliveries 2, 3, ...
+    time.sleep(0.4)
+    processor = Processor()
+    make(r, streams, processor).recover_once()  # the consumer's own claim is one more delivery
+    return processor, [json.loads(f["payload"]) for _, f in r.xrange(status)]
+
+
+def test_the_third_delivery_is_still_processed(r, streams):
+    processor, statuses = reclaim_with(r, streams, extra_claims=1)  # read + 1 claim + ours = 3
+    assert processor.calls == [1]
+    assert [s["status"] for s in statuses] == ["INDEXED"]
+
+
+def test_the_fourth_delivery_is_poison(r, streams):
+    processor, statuses = reclaim_with(r, streams, extra_claims=2)  # read + 2 claims + ours = 4
+    assert processor.calls == []
+    assert [(s["reason"], s["retryable"], s["attempts"]) for s in statuses] == [("POISON_MESSAGE", False, 1)]
+
+
 # ---- the consumer end to end
 
 def test_a_new_entry_is_processed_published_and_acknowledged(r, streams):
@@ -262,7 +333,7 @@ def test_a_poison_entry_is_reported_with_the_echoed_attempt_and_acked(r, streams
     r.xgroup_create(ingest, "rag-it", id="0", mkstream=True)
     entry_id = add_ingest(r, ingest, attempts=2)
     r.xreadgroup("rag-it", "dead", {ingest: ">"}, count=1)
-    for _ in range(3):  # XCLAIM raises the delivery count: 1 read + 3 claims = 4, over the threshold of 3
+    for _ in range(3):  # XCLAIM raises the delivery count: 1 read + 3 claims = 4, and ours makes 5
         r.xclaim(ingest, "rag-it", "dead", 0, [entry_id])
 
     processor = Processor()

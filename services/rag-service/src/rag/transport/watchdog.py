@@ -9,7 +9,6 @@ job_timeout + watchdog_grace, so a live job is never reclaimed.
 
 from __future__ import annotations
 
-import logging
 import os
 import threading
 import time
@@ -17,8 +16,6 @@ from collections.abc import Callable
 
 from rag.ingest.errors import TransientError
 from rag.transport.status_event import Reason
-
-logger = logging.getLogger(__name__)
 
 
 class Deadline:
@@ -61,24 +58,37 @@ class Watchdog:
         self._exit_fn = exit_fn
         self._lock = threading.Lock()
         self._timer: threading.Timer | None = None
+        # Timer.cancel() does nothing once the callback has started, so a disarm (or re-arm) that
+        # loses the race would still see the process exit. Every arm/disarm moves the generation
+        # on, and a firing timer only acts if its generation is still the current one.
+        self._generation = 0
 
     def arm(self) -> None:
         with self._lock:
             if self._timer is not None:
                 self._timer.cancel()
-            timer = threading.Timer(self._timeout, self._fire)
+            self._generation += 1
+            timer = threading.Timer(self._timeout, self._fire, args=(self._generation,))
             timer.daemon = True  # must never keep the process alive on its own
             self._timer = timer
             timer.start()
 
     def disarm(self) -> None:
         with self._lock:
+            self._generation += 1
             if self._timer is not None:
                 self._timer.cancel()
                 self._timer = None
 
-    def _fire(self) -> None:
-        logger.error("watchdog: a job ran past %.0fs and did not return; exiting the process", self._timeout)
-        for handler in logging.getLogger().handlers:
-            handler.flush()  # os._exit skips the normal flush
-        self._exit_fn(1)
+    def _fire(self, generation: int) -> None:
+        with self._lock:
+            if generation != self._generation:
+                return  # disarmed or re-armed after this timer started: the job is not stuck
+        try:
+            # Straight to fd 2: the logging machinery takes a lock the stuck main thread may be
+            # holding (a full stderr pipe), and os._exit must never wait for it.
+            os.write(2, f"watchdog: a job ran past {self._timeout:.0f}s and did not return; exiting the process\n".encode())
+        except OSError:
+            pass
+        finally:
+            self._exit_fn(1)
