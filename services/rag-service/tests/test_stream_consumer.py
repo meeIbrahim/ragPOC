@@ -61,6 +61,7 @@ class FakeRedis:
         self.claims = []
         self.xadd_errors = []
         self.ack_errors = []
+        self.renew_errors = []
         self.pending = {}  # entry id -> times_delivered (a claimed entry defaults to 2)
         self.gone = set()  # ids another consumer acked between our claim and the XPENDING
         self.pending_owner = "host/ingest/test"
@@ -110,7 +111,15 @@ class FakeRedis:
             "times_delivered": self.pending.get(min, 2),
         }]
 
+    def xclaim(self, name, groupname, consumername, min_idle_time, message_ids, **kw):
+        self.log.append(f"renew:{','.join(message_ids)}:justid={kw.get('justid')}")
+        self._next(self.renew_errors, None)
+        return list(message_ids)
+
     def xack(self, name, groupname, *ids):
+        self.ack_calls = getattr(self, "ack_calls", 0) + 1
+        if self.ack_calls > 5000:
+            raise RunawayLoop("the consumer kept acknowledging and never stopped")
         self.log.append(f"ack:{','.join(ids)}")
         self._next(self.ack_errors, None)
         return len(ids)
@@ -124,6 +133,9 @@ class FakeRedis:
         return 0
 
     def xadd(self, name, fields, **kw):
+        self.xadd_total = getattr(self, "xadd_total", 0) + 1
+        if self.xadd_total > 5000:
+            raise RunawayLoop("the consumer kept publishing and never stopped")
         self.log.append(f"xadd:{name}")
         self._next(self.xadd_errors, None)
         self.xadd_calls.append((name, fields, kw))  # only a publish that worked
@@ -667,6 +679,7 @@ def test_a_decode_error_during_a_claim_does_not_kill_the_loop():
     redis.claims = [UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")]
     drive(consumer, redis, [[[STREAM, [entry("1-0")]]]])
     assert len(processor.events) == 1  # reading carried on after the failed recovery pass
+    assert "consumers" in redis.log  # idle-consumer cleanup still ran after the failed claim
 
 
 def test_a_process_exit_inside_the_job_is_still_not_swallowed():
@@ -681,7 +694,7 @@ def test_a_process_exit_inside_the_job_is_still_not_swallowed():
 def test_publishing_stops_retrying_when_the_entry_would_become_reclaimable():
     # The entry's idle time starts at its delivery. A new publish attempt may only start while a
     # whole call_timeout still fits before min_idle, or a second consumer could reclaim and re-run it.
-    settings = ConsumerSettings(**{**SETTINGS.__dict__, "min_idle": timedelta(seconds=10), "call_timeout": 1.0, "publish_attempts": 5})
+    settings = ConsumerSettings(**{**SETTINGS.__dict__, "min_idle": timedelta(seconds=10), "call_timeout": 3.0, "publish_attempts": 5})
     now = {"t": 0.0}
     redis = FakeRedis()
     redis.xadd_errors = [RedisConnectionError("down")] * 20
@@ -690,13 +703,15 @@ def test_publishing_stops_retrying_when_the_entry_would_become_reclaimable():
     consumer._clock = lambda: now["t"]
 
     def sleep(seconds):
-        now["t"] += 5.0
+        now["t"] += 4.0
         return True
 
     consumer._sleep = sleep
     consumer.read_once()
     attempts = len([e for e in redis.log if e.startswith("xadd")])
-    assert attempts == 2  # t=0 and t=5 start; t=10 would leave no room for a call before min_idle
+    # Attempts start at t=0 and t=4. At t=8 the clock alone is still before min_idle (10s), but
+    # a whole 3s call would end at 11s: too late. Without the call_timeout term this is 3.
+    assert attempts == 2
 
 
 def test_the_first_publish_attempt_is_always_made():
@@ -777,3 +792,70 @@ def test_a_base_ingest_error_keeps_its_reason_and_is_retryable():
             raise IngestError(Reason.EMPTY_TEXT, "no text")
 
     assert run_job(Raises(), None, None) == Failed(True, Reason.EMPTY_TEXT, "no text")
+
+
+# ---- review round 2
+
+def test_the_poison_report_counts_its_budget_from_the_moment_it_starts():
+    settings = ConsumerSettings(**{**SETTINGS.__dict__, "min_idle": timedelta(seconds=10), "call_timeout": 3.0, "publish_attempts": 5})
+    now = {"t": 100.0}  # a large clock value: a budget measured from the epoch would be wrong
+    redis = FakeRedis()
+    redis.xadd_errors = [RedisConnectionError("down")] * 20
+    redis.pending = {"1-0": 9}
+    redis.claims = [["0-0", [entry("1-0")]], ["0-0", []]]
+    consumer, *_ = build(redis, settings=settings)
+    consumer._clock = lambda: now["t"]
+
+    def sleep(seconds):
+        now["t"] += 4.0
+        return True
+
+    consumer._sleep = sleep
+    consumer.recover_once()
+    assert len([e for e in redis.log if e.startswith("xadd")]) == 2  # same arithmetic as for a job
+
+
+def test_an_unexpected_error_while_retrying_the_held_status_does_not_end_the_process():
+    consumer, redis, processor, _ = pause_script(3)
+    redis.xadd_errors.append(ValueError("unexpected reply shape"))  # raised by the first held retry
+    drive(consumer, redis, [[[STREAM, [entry("1-0")]]]])
+    assert len(published(redis)) == 1 and "ack:1-0" in redis.log  # it recovered and published
+
+
+def test_an_error_while_acking_the_held_entry_does_not_end_the_process():
+    consumer, redis, processor, _ = pause_script(3)
+    redis.ack_errors = [ValueError("unexpected ack reply")]
+    drive(consumer, redis, [[[STREAM, [entry("1-0")]]]])  # must return; the entry is redelivered later
+
+
+def test_every_retry_of_a_held_status_renews_the_entry_without_touching_its_count():
+    # Held longer than min_idle another consumer could reclaim and re-run it. XCLAIM ... JUSTID
+    # resets the idle time, does not raise the delivery count, and is not refused at maxmemory.
+    consumer, redis, *_ = pause_script(5)
+    drive(consumer, redis, [[[STREAM, [entry("1-0")]]]])
+    renewals = [e for e in redis.log if e.startswith("renew")]
+    assert len(renewals) >= 2 and set(renewals) == {"renew:1-0:justid=True"}
+
+
+def test_a_failing_renewal_does_not_stop_the_status_from_being_published():
+    consumer, redis, *_ = pause_script(3)
+    redis.renew_errors = [RedisConnectionError("down")] * 5
+    drive(consumer, redis, [[[STREAM, [entry("1-0")]]]])
+    assert "ack:1-0" in redis.log
+
+
+def test_the_warning_for_a_status_that_is_still_held_is_throttled(caplog):
+    consumer, redis, *_ = pause_script(200)
+    with caplog.at_level("WARNING"):
+        drive(consumer, redis, [[[STREAM, [entry("1-0")]]]])
+    warnings = [r for r in caplog.records if "still cannot be published" in r.getMessage()]
+    assert 1 <= len(warnings) <= 20  # ~190 failed retries, a line every 30th
+
+
+def test_a_hostname_with_undecodable_bytes_gives_a_name_that_survives_redis(monkeypatch):
+    # Redis stores the name as sent with encoding_errors="replace"; a surrogate in it would come
+    # back as "?" and the owner check would then skip every reclaimed entry forever.
+    monkeypatch.setattr("rag.transport.stream_consumer.socket.gethostname", lambda: "h\udcff")
+    name = new_consumer_name()
+    assert name == name.encode("utf-8").decode("utf-8")  # round-trips unchanged
+    assert name.startswith("h") and "/ingest/" in name

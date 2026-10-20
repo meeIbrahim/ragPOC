@@ -262,6 +262,24 @@ def test_a_non_utf8_entry_is_acked_without_crashing_on_the_reclaim_path(r, strea
     assert r.xpending(ingest, "rag-it")["pending"] == 0
 
 
+# ---- renewing a held entry (XCLAIM ... JUSTID)
+
+def test_renewing_an_entry_resets_its_idle_time_but_not_its_delivery_count(r, streams):
+    ingest, _ = streams
+    r.xgroup_create(ingest, "rag-it", id="0", mkstream=True)
+    entry_id = add_ingest(r, ingest)
+    r.xreadgroup("rag-it", "me", {ingest: ">"}, count=1)
+    time.sleep(0.4)
+    before = r.xpending_range(ingest, "rag-it", min=entry_id, max=entry_id, count=1)[0]
+    assert before["time_since_delivered"] >= 400
+
+    make(r, streams, name="me")._renew(entry_id)
+
+    after = r.xpending_range(ingest, "rag-it", min=entry_id, max=entry_id, count=1)[0]
+    assert after["times_delivered"] == before["times_delivered"] == 1  # JUSTID: not a new delivery
+    assert after["time_since_delivered"] < 200  # idle was reset: nobody may reclaim it yet
+
+
 # ---- the poison boundary, exactly (K=3: the 4th delivery)
 
 def reclaim_with(r, streams, extra_claims):

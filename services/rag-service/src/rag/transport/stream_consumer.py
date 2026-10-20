@@ -54,7 +54,18 @@ _MAX_LOGGED = 200
 def new_consumer_name() -> str:
     """`<host>/ingest/<uuid>`, new on every process start (L19): a restarted process never
     drains a previous name's pending list; those entries return only through the recovery pass."""
-    return f"{socket.gethostname() or 'unknown'}/ingest/{uuid.uuid4()}"
+    host = socket.gethostname() or "unknown"
+    # gethostname() decodes odd bytes with surrogateescape. The Redis client sends the name with
+    # encoding_errors="replace", so a surrogate would come back as "?" and the owner check would
+    # then never match: replace it here, once, so the name is the same on both sides.
+    host = host.encode("utf-8", "replace").decode("utf-8")
+    return f"{host}/ingest/{uuid.uuid4()}"
+
+
+def socket_timeout_for(call_timeout: float, read_block: float) -> float:
+    """The Redis read timeout: call_timeout, but always longer than the longest BLOCK, or a quiet
+    stream would look like a dead connection."""
+    return max(call_timeout, read_block + 5)
 
 
 @dataclass(frozen=True)
@@ -69,8 +80,9 @@ class ConsumerSettings:
     read_block: timedelta = timedelta(seconds=2)
     retry_delay: float = 1.0
     publish_attempts: int = 3
-    # Seconds one Redis call may take. A new publish attempt only starts while a whole call still
-    # fits before min_idle, or another consumer could reclaim and re-run the entry meanwhile.
+    # Seconds one publish attempt may take at most (connect + read timeout). A new attempt only
+    # starts while a whole one still fits before min_idle, or another consumer could reclaim and
+    # re-run the entry meanwhile.
     call_timeout: float = 60.0
     # Jobs run from one recovery pass before the loop goes back to reading new entries.
     max_recovery_jobs: int = 10
@@ -78,6 +90,10 @@ class ConsumerSettings:
     @classmethod
     def from_config(cls, config: Config) -> ConsumerSettings:
         consumer = config.rag.consumer
+        call_timeout = config.rag.call_timeout.total_seconds()
+        # One attempt that has to reconnect can spend the connect timeout and then the read
+        # timeout, so that sum, not call_timeout alone, is what a publish attempt may cost.
+        attempt_bound = call_timeout + socket_timeout_for(call_timeout, cls.read_block.total_seconds())
         return cls(
             stream=config.redis.stream,
             group=config.redis.consumer_group,
@@ -86,7 +102,7 @@ class ConsumerSettings:
             poison_threshold=consumer.poison_threshold,
             cleanup_idle=consumer.consumer_cleanup_idle,
             job_timeout=consumer.job_timeout,
-            call_timeout=config.rag.call_timeout.total_seconds(),
+            call_timeout=attempt_bound,
         )
 
 
@@ -125,6 +141,7 @@ class StreamConsumer:
         self._clock = clock
         # (entry id, status) whose publish failed: no reading or claiming until it goes through.
         self._held: tuple[str, StatusEvent] | None = None
+        self._held_failures = 0
         self._stop = threading.Event()
         # sleep(seconds) -> True when the full wait happened, False when stop() cut it short.
         self._sleep = sleep or (lambda seconds: not self._stop.wait(seconds))
@@ -167,7 +184,8 @@ class StreamConsumer:
         next_recovery = 0.0  # recover once right at start
         while not self._stop.is_set():
             if self._held is not None:
-                if not self._retry_held():
+                self._guarded(self._retry_held)  # an unexpected error here must not end the process
+                if self._held is not None:
                     self._sleep(self._settings.retry_delay)
                 continue
             if self._clock() >= next_recovery:
@@ -360,21 +378,37 @@ class StreamConsumer:
             self._ack(entry_id)
             return True
         self._held = (entry_id, status)
+        self._held_failures = 0
         return False
 
     def _retry_held(self) -> bool:
         """One more try at the held status. The job already ran and is not run again."""
         assert self._held is not None
         entry_id, status = self._held
+        self._renew(entry_id)
         try:
             self._publisher.publish(status)
         except RedisError as exc:
-            logger.warning("status for %s still cannot be published: %s", entry_id, _clip(exc))
+            self._held_failures += 1
+            if self._held_failures == 1 or self._held_failures % 30 == 0:  # not a line per second
+                logger.warning(
+                    "status for %s still cannot be published (%d tries): %s", entry_id, self._held_failures, _clip(exc)
+                )
             return False
         self._held = None
+        self._held_failures = 0
         logger.info("the held status for %s was published; resuming", entry_id)
         self._ack(entry_id)
         return True
+
+    def _renew(self, entry_id: str) -> None:
+        """Keep a held entry from becoming reclaimable: XCLAIM ... JUSTID resets its idle time,
+        does not add a delivery, and (unlike XADD) is not refused when Redis is at maxmemory. It
+        is the idle-time renewal of backlog B11, done only for the entry being held. Best effort."""
+        try:
+            self._redis.xclaim(self._settings.stream, self._settings.group, self.name, 0, [entry_id], justid=True)
+        except Exception as exc:
+            logger.debug("could not renew %s: %s", entry_id, _clip(exc))
 
     @staticmethod
     def _status_for(event: IngestEvent, outcome: Outcome) -> StatusEvent:

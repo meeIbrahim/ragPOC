@@ -22,7 +22,7 @@ from redis.retry import Retry
 from rag.core import config_reader, logging_setup
 from rag.ingest.stub import Mode, StubProcessor
 from rag.transport.status_publisher import StatusPublisher
-from rag.transport.stream_consumer import ConsumerSettings, StreamConsumer
+from rag.transport.stream_consumer import ConsumerSettings, StreamConsumer, socket_timeout_for
 from rag.transport.watchdog import Watchdog
 
 logger = logging.getLogger(__name__)
@@ -81,7 +81,7 @@ def make_redis(config: config_reader.Config, *, host: str | None = None, port: i
         encoding_errors="replace",
         protocol=2,
         retry=Retry(NoBackoff(), 0),
-        socket_timeout=max(call_timeout, read_block + 5),
+        socket_timeout=socket_timeout_for(call_timeout, read_block),
         socket_connect_timeout=call_timeout,
     )
 

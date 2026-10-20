@@ -199,6 +199,14 @@ def test_redis_py_does_not_retry_on_its_own(wired):
     assert retry.get_retries() == 0
 
 
+def test_the_budget_bound_follows_a_tiny_call_timeout_too(wired, tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text(path.read_text().replace('call_timeout="60s"', 'call_timeout="1s"'))
+    entry.main(["--mode", "indexed", "--config", str(path)])
+    kwargs = FakeRedis.created[0].kwargs
+    assert FakeStreamConsumer.instances[0].settings.call_timeout == kwargs["socket_connect_timeout"] + kwargs["socket_timeout"] == 1 + 7
+
+
 def test_the_read_timeout_outlasts_the_block_even_for_a_tiny_call_timeout(wired, tmp_path):
     path = tmp_path / "config.toml"
     path.write_text(path.read_text().replace('call_timeout="60s"', 'call_timeout="1s"'))
@@ -207,6 +215,9 @@ def test_the_read_timeout_outlasts_the_block_even_for_a_tiny_call_timeout(wired,
     assert timeout >= ConsumerSettings.from_config(wired).read_block.total_seconds() + 5
 
 
-def test_the_publish_budget_knows_the_call_timeout(wired):
+def test_the_publish_budget_bounds_one_attempt_by_connect_plus_read_timeout(wired):
+    # A reconnecting attempt can spend socket_connect_timeout and then socket_timeout.
     entry.main(["--mode", "indexed"])
-    assert FakeStreamConsumer.instances[0].settings.call_timeout == wired.rag.call_timeout.total_seconds()
+    kwargs = FakeRedis.created[0].kwargs
+    bound = kwargs["socket_connect_timeout"] + kwargs["socket_timeout"]
+    assert FakeStreamConsumer.instances[0].settings.call_timeout == bound
