@@ -19,3 +19,9 @@ def get_client() -> QdrantClient:
         timeout=int(config.rag.call_timeout.total_seconds()),
         check_compatibility=False,
     )
+
+
+def close_client() -> None:
+    """Close the process-wide client if one was built. It never builds one just to close it."""
+    if get_client.cache_info().currsize:
+        get_client().close()

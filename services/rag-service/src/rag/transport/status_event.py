@@ -55,6 +55,16 @@ class Reason(StrEnum):
     INTERNAL = "INTERNAL"
 
 
+# Untrusted values are repeated in error messages, which get logged: keep them short. The Go
+# decoder caps its echoes the same way.
+_MAX_ECHO = 64
+
+
+def _clip(value: Any) -> str:
+    text = repr(value)
+    return text if len(text) <= _MAX_ECHO else text[:_MAX_ECHO] + "..."
+
+
 def _is_int(value: Any) -> bool:
     # bool is a subclass of int in Python; JSON true/false must not pass as a number.
     return isinstance(value, int) and not isinstance(value, bool)
@@ -62,7 +72,7 @@ def _is_int(value: Any) -> bool:
 
 def _check_attempts(attempts: Any) -> int:
     if not _is_int(attempts) or not 0 <= attempts <= MAX_INTEGER:
-        raise InvalidEventError(f"attempts must be an integer between 0 and {MAX_INTEGER}, got {attempts!r}")
+        raise InvalidEventError(f"attempts must be an integer between 0 and {MAX_INTEGER}, got {_clip(attempts)}")
     return attempts
 
 
@@ -70,7 +80,7 @@ def _coerce(enum_type: type[StrEnum], value: Any, name: str) -> Any:
     try:
         return enum_type(value)
     except ValueError:
-        raise InvalidEventError(f"unknown {name} {value!r}") from None
+        raise InvalidEventError(f"unknown {name} {_clip(value)}") from None
 
 
 def _format_timestamp(moment: datetime) -> str:
@@ -95,19 +105,21 @@ class IngestEvent:
         """Parse Go's created_at. Go prints up to nanoseconds; datetime keeps microseconds, so
         the extra digits are dropped."""
         if not isinstance(text, str) or _CREATED_AT.fullmatch(text) is None:
-            raise InvalidEventError(f"created_at must be RFC 3339 UTC with a Z suffix, got {text!r}")
+            raise InvalidEventError(f"created_at must be RFC 3339 UTC with a Z suffix, got {_clip(text)}")
         try:
             return datetime.fromisoformat(text)
         except ValueError as exc:  # matches the pattern but is not a real date, e.g. 02-30
-            raise InvalidEventError(f"created_at is not a valid timestamp: {text!r}") from exc
+            raise InvalidEventError(f"created_at is not a valid timestamp: {_clip(text)}") from exc
 
     @classmethod
     def parse(cls, raw: str | bytes) -> IngestEvent:
         try:
             document = json.loads(raw)
-        except (json.JSONDecodeError, UnicodeDecodeError, RecursionError) as exc:
-            # RecursionError: deeply nested garbage. It is not a ValueError, so without this it
-            # would escape the consumer's "log and acknowledge" handling.
+        except (ValueError, RecursionError) as exc:
+            # ValueError covers JSONDecodeError, UnicodeDecodeError and the plain ValueError
+            # json.loads raises for an integer of more than 4300 digits. RecursionError (deeply
+            # nested garbage) is not a ValueError. Neither may escape the consumer's "log and
+            # acknowledge" handling.
             raise InvalidEventError(f"payload is not valid JSON: {type(exc).__name__}") from exc
         if not isinstance(document, dict):
             raise InvalidEventError("payload must be a JSON object")
@@ -125,10 +137,10 @@ class IngestEvent:
 
         version = field_of("schema_version")
         if not _is_int(version) or version != SCHEMA_VERSION:
-            raise InvalidEventError(f"unsupported schema_version {version!r}")
+            raise InvalidEventError(f"unsupported schema_version {_clip(version)}")
         size = field_of("size")
         if not _is_int(size) or size < 0:
-            raise InvalidEventError(f"size must be a non-negative integer, got {size!r}")
+            raise InvalidEventError(f"size must be a non-negative integer, got {_clip(size)}")
 
         return cls(
             id=text("id"),
@@ -170,18 +182,28 @@ class StatusEvent:
         if not isinstance(self.id, str) or self.id == "":
             raise InvalidEventError("id must be a non-empty string")
         if not isinstance(self.created_at, datetime):
-            raise InvalidEventError(f"created_at must be a datetime, got {self.created_at!r}")
-        if self.created_at.tzinfo is None:
-            raise InvalidEventError("created_at must be timezone-aware")
+            raise InvalidEventError(f"created_at must be a datetime, got {_clip(self.created_at)}")
+        # Aware means utcoffset() is not None: a tzinfo that returns None is treated as naive by
+        # Python and astimezone() would silently read it as host-local time. Convert once, here,
+        # so nothing that passes the constructor can fail later in to_json().
+        try:
+            if self.created_at.utcoffset() is None:
+                raise InvalidEventError("created_at must be timezone-aware")
+            created_at = self.created_at.astimezone(UTC)
+        except InvalidEventError:
+            raise
+        except Exception as exc:  # a broken tzinfo, or a moment that overflows when moved to UTC
+            raise InvalidEventError(f"created_at cannot be converted to UTC: {type(exc).__name__}") from exc
+        object.__setattr__(self, "created_at", created_at)
         if self.retryable is not None and not isinstance(self.retryable, bool):
-            raise InvalidEventError(f"retryable must be true or false, got {self.retryable!r}")
+            raise InvalidEventError(f"retryable must be true or false, got {_clip(self.retryable)}")
         if self.detail is not None:
             if not isinstance(self.detail, str):
-                raise InvalidEventError(f"detail must be text, got {self.detail!r}")
+                raise InvalidEventError(f"detail must be text, got {_clip(self.detail)}")
             if len(self.detail) > MAX_DETAIL_LENGTH:
                 object.__setattr__(self, "detail", self.detail[:MAX_DETAIL_LENGTH])
         if self.chunk_count is not None and (not _is_int(self.chunk_count) or not 0 <= self.chunk_count <= MAX_INTEGER):
-            raise InvalidEventError(f"chunk_count must be an integer between 0 and {MAX_INTEGER}, got {self.chunk_count!r}")
+            raise InvalidEventError(f"chunk_count must be an integer between 0 and {MAX_INTEGER}, got {_clip(self.chunk_count)}")
         if self.status is Status.FAILED:
             if self.retryable is None:
                 raise InvalidEventError("retryable must be true or false when status is FAILED")

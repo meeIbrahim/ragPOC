@@ -31,8 +31,12 @@ class SQLiteManager:
             raise RuntimeError("SQLiteManager is already open; use a new manager for a second connection")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self.path, timeout=BUSY_TIMEOUT_MS / 1000)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
+        except BaseException:
+            conn.close()  # e.g. "database is locked" while switching the mode: do not leak the handle
+            raise
         self._conn = conn
         return conn
 

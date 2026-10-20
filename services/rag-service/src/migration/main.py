@@ -18,6 +18,14 @@ def run_migrations(migration):
         raise
 
 
+def _close_client() -> None:
+    # Closing is housekeeping: its failure must not change the outcome of the migrations.
+    try:
+        qdrant_manager.close_client()
+    except Exception:
+        logger.warning("closing the Qdrant client failed", exc_info=True)
+
+
 def main() -> int:
     """Run every migration. Returns the process exit code: 0 on success, 1 on any failure."""
     logging_setup.configure()
@@ -46,7 +54,7 @@ def main() -> int:
         )
         return 1
     finally:
-        qdrant_manager.get_client().close()
+        _close_client()
     return 0
 
 

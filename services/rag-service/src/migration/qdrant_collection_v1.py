@@ -52,6 +52,11 @@ class QdrantCollection:
                 f"collection {name!r} exists with vector size {size} but rag.embedding_dim is "
                 f"{dim}. Fix embedding_dim, or {drop}."
             )
+        if getattr(vectors, "multivector_config", None) is not None:
+            raise RuntimeError(
+                f"collection {name!r} is a multivector collection, but this service writes one "
+                f"dense vector per chunk; {drop}."
+            )
         distance = getattr(vectors, "distance", None)
         if distance != Distance.COSINE:
             raise RuntimeError(

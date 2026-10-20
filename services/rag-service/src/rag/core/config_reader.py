@@ -175,13 +175,15 @@ def load(path: str | os.PathLike[str] | None = None) -> Config:
     path defaults to $RAG_CONFIG, else the repo's config.toml. Raises ConfigError listing every
     problem when the file is unreadable or invalid.
     """
+    from_default = path is None and not os.environ.get("RAG_CONFIG")
     if path is None:
         path = os.environ.get("RAG_CONFIG") or default_path()
     path = Path(path)
     try:
         raw = tomllib.loads(path.read_text(encoding="utf-8"))
     except OSError as exc:
-        raise ConfigError(f"cannot read {path}: {exc}") from exc
+        hint = " (this is the default location; set RAG_CONFIG to use another file)" if from_default else ""
+        raise ConfigError(f"cannot read {path}: {exc}{hint}") from exc
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"{path} is not valid TOML: {exc}") from exc
 
