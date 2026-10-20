@@ -31,6 +31,9 @@ type Config struct {
 // contracts/config/duration_vectors.json pin it.
 var durationPattern = regexp.MustCompile(`^[0-9]{1,6}(s|m|h)$`)
 
+// maxPort is the largest TCP port. The Python reader enforces the same bound.
+const maxPort = 65535
+
 // Duration is a time.Duration written in config.toml as a string such as "15m".
 type Duration time.Duration
 
@@ -164,8 +167,8 @@ func (c *Config) Validate() error {
 			add("%s must not be empty", f.name)
 		}
 	}
-	if c.Redis.Port <= 0 {
-		add("redis.port must be > 0")
+	if c.Redis.Port < 1 || c.Redis.Port > maxPort {
+		add("redis.port must be between 1 and %d", maxPort)
 	}
 	if c.Redis.StreamMaxLen <= 0 {
 		add("redis.stream_max_len must be > 0")
@@ -173,11 +176,11 @@ func (c *Config) Validate() error {
 
 	// Renamed keys ([server] -> [rag_grpc], rag.model -> embedding_model) decode to zero values
 	// from a stale file, so require them explicitly.
-	if c.RAGGRPC.Port <= 0 {
-		add("rag_grpc.port must be > 0")
+	if c.RAGGRPC.Port < 1 || c.RAGGRPC.Port > maxPort {
+		add("rag_grpc.port must be between 1 and %d", maxPort)
 	}
-	if c.Go.Port <= 0 {
-		add("go.port must be > 0")
+	if c.Go.Port < 1 || c.Go.Port > maxPort {
+		add("go.port must be between 1 and %d", maxPort)
 	}
 	if c.RAG.Collection == "" {
 		add("rag.collection must not be empty")

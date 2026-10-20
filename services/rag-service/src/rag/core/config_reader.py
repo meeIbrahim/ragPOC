@@ -12,10 +12,11 @@ point logs a warning.
 from __future__ import annotations
 
 import functools
+import logging
 import os
 import re
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -31,6 +32,11 @@ class ConfigError(Exception):
 # matches other scripts' digits.
 _DURATION = re.compile(r"[0-9]{1,6}(s|m|h)")
 _UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600}
+
+# TOML integers are 64-bit; Go rejects the rest when it decodes them, so Python must too, or a
+# file would start one service and break the other.
+_MAX_INT64 = 2**63 - 1
+_MAX_PORT = 65535
 
 # Characters that cannot appear inside an extension: it is the text after the last dot of a
 # filename, so ".tar.gz" could never match. The same set as the Go reader.
@@ -48,8 +54,9 @@ def parse_duration(value: Any) -> timedelta:
 @dataclass(frozen=True)
 class MinioConfig:
     url: str
-    access_key: str
-    secret_key: str
+    # Credentials stay out of the generated repr, so logging the config cannot leak them.
+    access_key: str = field(repr=False)
+    secret_key: str = field(repr=False)
     upload_bucket: str
     ingestion_bucket: str
 
@@ -148,8 +155,18 @@ _FOREIGN_TABLES = {"go"}
 
 
 def default_path() -> Path:
-    """config.toml at the repo root: services/rag-service/src/rag/core -> five levels up."""
-    return Path(__file__).resolve().parents[5] / "config.toml"
+    """config.toml at the repo root: services/rag-service/src/rag/core -> five levels up.
+
+    That only holds for a checkout. Anywhere else (a container image, site-packages) set
+    RAG_CONFIG. A relative sqlite.dir in the file is resolved against the working directory,
+    not against the file."""
+    here = Path(__file__).resolve()
+    try:
+        return here.parents[5] / "config.toml"
+    except IndexError:
+        raise ConfigError(
+            f"cannot locate config.toml relative to {here}: set RAG_CONFIG to its path"
+        ) from None
 
 
 def load(path: str | os.PathLike[str] | None = None) -> Config:
@@ -175,6 +192,12 @@ def load(path: str | os.PathLike[str] | None = None) -> Config:
     return config
 
 
+def warn_unknown_keys(config: Config, logger: logging.Logger) -> None:
+    """Every entry point calls this once after loading, so a typo'd key is visible."""
+    if config.unknown_keys:
+        logger.warning("config has keys this service does not read: %s", ", ".join(config.unknown_keys))
+
+
 @functools.cache
 def get_config() -> Config:
     """The process-wide config, loaded once. Tests clear it with get_config.cache_clear()."""
@@ -188,6 +211,9 @@ class _Reader:
     def __init__(self, raw: dict[str, Any]) -> None:
         self.raw = raw
         self.problems: list[str] = []
+        # Dotted names of durations that failed to parse or were not positive. The timing rules
+        # need valid durations, but must still run when an unrelated key is wrong.
+        self.invalid_durations: set[str] = set()
 
     def _table(self, path: tuple[str, ...]) -> dict[str, Any]:
         node: Any = self.raw
@@ -212,7 +238,7 @@ class _Reader:
             return ""
         return value
 
-    def integer(self, path: tuple[str, ...], key: str, minimum: int) -> int:
+    def integer(self, path: tuple[str, ...], key: str, minimum: int, maximum: int = _MAX_INT64) -> int:
         value = self._table(path).get(key)
         # bool is an int subclass in Python; TOML true/false must not pass as a number.
         if not isinstance(value, int) or isinstance(value, bool):
@@ -220,17 +246,22 @@ class _Reader:
             return minimum
         if value < minimum:
             self._fail(path, key, f"must be >= {minimum}")
+        elif value > maximum:
+            self._fail(path, key, f"must be <= {maximum}")
         return value
 
     def duration(self, path: tuple[str, ...], key: str) -> timedelta:
         value = self._table(path).get(key)
+        dotted = ".".join((*path, key))
         try:
             parsed = parse_duration(value)
         except ConfigError as exc:
             self._fail(path, key, str(exc))
+            self.invalid_durations.add(dotted)
             return timedelta(0)
         if parsed <= timedelta(0):
             self._fail(path, key, "must be > 0")
+            self.invalid_durations.add(dotted)
         return parsed
 
     def extensions(self, path: tuple[str, ...], key: str) -> tuple[str, ...]:
@@ -283,10 +314,10 @@ class _Reader:
             call_timeout=self.duration(("rag",), "call_timeout"),
             consumer=consumer,
         )
-        rag_grpc = RagGrpcConfig(port=self.integer(("rag_grpc",), "port", 1))
+        rag_grpc = RagGrpcConfig(port=self.integer(("rag_grpc",), "port", 1, _MAX_PORT))
         redis = RedisConfig(
             host=self.text(("redis",), "host"),
-            port=self.integer(("redis",), "port", 1),
+            port=self.integer(("redis",), "port", 1, _MAX_PORT),
             stream=self.text(("redis",), "stream"),
             consumer_group=self.text(("redis",), "consumer_group"),
             stream_max_len=self.integer(("redis",), "stream_max_len", 1),
@@ -298,8 +329,10 @@ class _Reader:
             allowed_extensions=self.extensions(("ingestion",), "allowed_extensions"),
         )
 
-        # The timing rules only make sense once every duration parsed.
-        if not self.problems:
+        # The timing rules need valid durations, but not a clean file: an unrelated problem
+        # elsewhere must not hide a violation, or the operator needs two runs to see both.
+        timing_keys = {f"rag.consumer.{k}" for k in ("job_timeout", "watchdog_grace", "min_idle", "consumer_cleanup_idle")}
+        if not (timing_keys & self.invalid_durations):
             self._check_timing(consumer)
 
         return Config(minio, sqlite, qdrant, rag, rag_grpc, redis, ingestion, tuple(self._unknown_keys()))

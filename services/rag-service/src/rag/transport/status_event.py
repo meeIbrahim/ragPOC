@@ -5,8 +5,9 @@
 
 The machine-checkable contract is contracts/events/*.schema.json plus the fixtures next to it;
 tests/test_contracts.py runs both against this module, and the Go tests run against the same
-files. Parsing here is as strict as the schema: a malformed ingest event is the consumer's
-problem to log and acknowledge, not to guess at.
+files. Parsing is strict: integer fields must be JSON integers (Go's producer only ever emits
+integers; Go's status decoder is the lenient side and also takes 1.0). A malformed ingest event
+is the consumer's problem to log and acknowledge, not to guess at.
 """
 
 from __future__ import annotations
@@ -65,6 +66,13 @@ def _check_attempts(attempts: Any) -> int:
     return attempts
 
 
+def _coerce(enum_type: type[StrEnum], value: Any, name: str) -> Any:
+    try:
+        return enum_type(value)
+    except ValueError:
+        raise InvalidEventError(f"unknown {name} {value!r}") from None
+
+
 def _format_timestamp(moment: datetime) -> str:
     return moment.astimezone(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
@@ -97,8 +105,10 @@ class IngestEvent:
     def parse(cls, raw: str | bytes) -> IngestEvent:
         try:
             document = json.loads(raw)
-        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-            raise InvalidEventError(f"payload is not valid JSON: {exc}") from exc
+        except (json.JSONDecodeError, UnicodeDecodeError, RecursionError) as exc:
+            # RecursionError: deeply nested garbage. It is not a ValueError, so without this it
+            # would escape the consumer's "log and acknowledge" handling.
+            raise InvalidEventError(f"payload is not valid JSON: {type(exc).__name__}") from exc
         if not isinstance(document, dict):
             raise InvalidEventError("payload must be a JSON object")
 
@@ -148,15 +158,32 @@ class StatusEvent:
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     def __post_init__(self) -> None:
+        # The public constructor is as strict as the factories: a plain "FAILED" string would
+        # otherwise skip the FAILED checks and only crash later, in to_json().
+        # The dataclass is frozen, so coerced values are written with object.__setattr__.
         if not isinstance(self.hash, str) or self.hash == "":
             raise InvalidEventError("hash is required")
+        object.__setattr__(self, "status", _coerce(Status, self.status, "status"))
+        if self.reason is not None:
+            object.__setattr__(self, "reason", _coerce(Reason, self.reason, "reason"))
         _check_attempts(self.attempts)
+        if not isinstance(self.id, str) or self.id == "":
+            raise InvalidEventError("id must be a non-empty string")
+        if not isinstance(self.created_at, datetime):
+            raise InvalidEventError(f"created_at must be a datetime, got {self.created_at!r}")
         if self.created_at.tzinfo is None:
             raise InvalidEventError("created_at must be timezone-aware")
-        if self.chunk_count is not None and (not _is_int(self.chunk_count) or self.chunk_count < 0):
-            raise InvalidEventError(f"chunk_count must be a non-negative integer, got {self.chunk_count!r}")
+        if self.retryable is not None and not isinstance(self.retryable, bool):
+            raise InvalidEventError(f"retryable must be true or false, got {self.retryable!r}")
+        if self.detail is not None:
+            if not isinstance(self.detail, str):
+                raise InvalidEventError(f"detail must be text, got {self.detail!r}")
+            if len(self.detail) > MAX_DETAIL_LENGTH:
+                object.__setattr__(self, "detail", self.detail[:MAX_DETAIL_LENGTH])
+        if self.chunk_count is not None and (not _is_int(self.chunk_count) or not 0 <= self.chunk_count <= MAX_INTEGER):
+            raise InvalidEventError(f"chunk_count must be an integer between 0 and {MAX_INTEGER}, got {self.chunk_count!r}")
         if self.status is Status.FAILED:
-            if not isinstance(self.retryable, bool):
+            if self.retryable is None:
                 raise InvalidEventError("retryable must be true or false when status is FAILED")
             if self.reason is None:
                 raise InvalidEventError("reason is required when status is FAILED")
@@ -191,19 +218,13 @@ class StatusEvent:
         id: str | None = None,
         created_at: datetime | None = None,
     ) -> StatusEvent:
-        if reason is None:
-            raise InvalidEventError("reason is required when status is FAILED")
-        try:
-            reason = Reason(reason)
-        except ValueError as exc:
-            raise InvalidEventError(f"unknown reason {reason!r}") from exc
         return cls(
             hash=hash,
             status=Status.FAILED,
             attempts=attempts,
             retryable=retryable,
             reason=reason,
-            detail=None if detail is None else detail[:MAX_DETAIL_LENGTH],
+            detail=detail,
             **_identity(id, created_at),
         )
 

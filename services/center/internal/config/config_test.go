@@ -178,6 +178,9 @@ port=50051`, "rag_grpc.port"},
 		{"missing ingestion_bucket", `ingestion_bucket="ingestion-bucket"`, ``, "minio.ingestion_bucket"},
 		{"missing go.sqlite_dir", `sqlite_dir="./go_sqlite_db"`, ``, "go.sqlite_dir"},
 		{"zero go.port", `port=8080`, `port=0`, "go.port"},
+		{"redis port above 65535", `port=6379`, `port=65536`, "redis.port"},
+		{"go port above 65535", `port=8080`, `port=65536`, "go.port"},
+		{"rag_grpc port above 65535", `port=50051`, `port=65536`, "rag_grpc.port"},
 		{"extension without dot", `allowed_extensions=[".pdf", ".txt", ".md"]`, `allowed_extensions=["pdf"]`, "allowed_extensions"},
 		{"missing status_stream", `status_stream="ingest.status"`, ``, "status_stream"},
 		{"missing status group", `status_consumer_group="center-status"`, ``, "status_consumer_group"},
@@ -294,5 +297,12 @@ func TestLoadReportsUnknownKeys(t *testing.T) {
 	clean, err := Load(writeConfig(t, validTOML))
 	if err != nil || len(clean.UnknownKeys) != 0 {
 		t.Fatalf("clean config: err=%v unknown=%v", err, clean.UnknownKeys)
+	}
+}
+
+func TestPort65535IsValid(t *testing.T) {
+	body := strings.Replace(validTOML, `port=6379`, `port=65535`, 1)
+	if _, err := Load(writeConfig(t, body)); err != nil {
+		t.Fatalf("port 65535 must be valid: %v", err)
 	}
 }

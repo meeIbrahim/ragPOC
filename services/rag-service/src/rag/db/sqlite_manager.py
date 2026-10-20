@@ -25,6 +25,10 @@ class SQLiteManager:
         self._conn: sqlite3.Connection | None = None
 
     def __enter__(self) -> sqlite3.Connection:
+        if self._conn is not None:
+            # Entering twice would overwrite the connection: the outer block would then never
+            # commit or close the first one, and its writes would be lost.
+            raise RuntimeError("SQLiteManager is already open; use a new manager for a second connection")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self.path, timeout=BUSY_TIMEOUT_MS / 1000)
         conn.execute("PRAGMA journal_mode=WAL")

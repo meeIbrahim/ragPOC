@@ -25,13 +25,7 @@ class QdrantCollection:
         client = self._client or qdrant_manager.get_client()
         name = config.collection
         if client.collection_exists(name):
-            existing = _vector_size(client.get_collection(name).config.params.vectors)
-            if existing != dim:
-                raise RuntimeError(
-                    f"collection {name!r} exists with vector size {existing} but rag.embedding_dim "
-                    f"is {dim}. Fix embedding_dim, or drop the collection and run the migration "
-                    "again (this deletes its indexed vectors)."
-                )
+            self._check_existing(name, dim, client.get_collection(name).config.params.vectors)
             logger.info("Collection %s already initialized", name)
             return
 
@@ -44,6 +38,23 @@ class QdrantCollection:
         logger.info("Collection %s created", name)
 
 
-def _vector_size(vectors):
-    """The size of the unnamed vector config, or None for a named-vectors collection."""
-    return getattr(vectors, "size", None)
+    @staticmethod
+    def _check_existing(name, dim, vectors):
+        drop = "drop the collection and run the migration again (this deletes its indexed vectors)"
+        size = getattr(vectors, "size", None)
+        if size is None:  # a dict of named vectors: this service writes one unnamed vector
+            raise RuntimeError(
+                f"collection {name!r} uses named or sparse vectors, but this service needs one "
+                f"unnamed dense vector; {drop}."
+            )
+        if size != dim:
+            raise RuntimeError(
+                f"collection {name!r} exists with vector size {size} but rag.embedding_dim is "
+                f"{dim}. Fix embedding_dim, or {drop}."
+            )
+        distance = getattr(vectors, "distance", None)
+        if distance != Distance.COSINE:
+            raise RuntimeError(
+                f"collection {name!r} uses distance {distance}, but retrieval scores assume "
+                f"cosine; {drop}."
+            )

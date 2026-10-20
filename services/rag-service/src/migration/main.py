@@ -18,11 +18,15 @@ def run_migrations(migration):
         raise
 
 
-def main():
+def main() -> int:
+    """Run every migration. Returns the process exit code: 0 on success, 1 on any failure."""
     logging_setup.configure()
-    config = config_reader.get_config()
-    if config.unknown_keys:
-        logger.warning("config has keys this service does not read: %s", ", ".join(config.unknown_keys))
+    try:
+        config = config_reader.get_config()
+    except config_reader.ConfigError as exc:
+        logger.error("%s", exc)
+        return 1
+    config_reader.warn_unknown_keys(config, logger)
 
     # The MinIO buckets are created by the Go service (`make go_migrate`), not here.
     migrations = [
@@ -32,9 +36,19 @@ def main():
     try:
         for migration in migrations:
             run_migrations(migration)
+    except Exception:
+        # run_migrations already logged the traceback; this line adds where it was pointed.
+        logger.error(
+            "Migrations aborted (qdrant.url=%s, sqlite.dir=%s). Fix the cause and run them again; "
+            "finished steps are safe to repeat.",
+            config.qdrant.url,
+            config.sqlite.dir,
+        )
+        return 1
     finally:
         qdrant_manager.get_client().close()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

@@ -15,6 +15,8 @@ def configure(level: str | int | None = None) -> None:
     than adding another. level defaults to $LOG_LEVEL, then INFO."""
     if level is None:
         level = os.environ.get("LOG_LEVEL", "INFO")
+    if isinstance(level, str):
+        level = level.upper()
     formatter = logging.Formatter(_FORMAT, _DATE_FORMAT)
     formatter.converter = time.gmtime
     handler = logging.StreamHandler()
