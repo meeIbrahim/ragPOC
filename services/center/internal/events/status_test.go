@@ -103,15 +103,18 @@ func TestDecodeStatusMatchesKeysExactly(t *testing.T) {
 // JSON Schema (and so a Python producer that passes it) treats 1.0 and 1e0 as the integer 1.
 // Discarding such an event would leave the document PROCESSING, so integral values are accepted.
 func TestDecodeStatusAcceptsIntegralNumbers(t *testing.T) {
-	for _, attempts := range []string{`1`, `1.0`, `1e0`, `1E0`, `0.1e1`, `-0`} {
+	for _, attempts := range []string{`1`, `1.0`, `1e0`, `1E0`, `0.1e1`, `-0`, `2147483647`} {
 		ev, err := DecodeStatus(payload(`"status":"INDEXED","attempts":` + attempts))
 		if err != nil {
 			t.Errorf("attempts %s rejected: %v", attempts, err)
 			continue
 		}
 		want := 1
-		if attempts == `-0` {
+		switch attempts {
+		case `-0`:
 			want = 0
+		case `2147483647`:
+			want = 2147483647
 		}
 		if ev.Attempts != want {
 			t.Errorf("attempts %s = %d, want %d", attempts, ev.Attempts, want)
@@ -127,7 +130,8 @@ func TestDecodeStatusAcceptsIntegralNumbers(t *testing.T) {
 }
 
 func TestDecodeStatusRejectsNonIntegralNumbers(t *testing.T) {
-	for _, attempts := range []string{`1.5`, `-0.5`, `1e20`, `99999999999999999999`, `1e400`, `true`, `[]`, `{}`} {
+	for _, attempts := range []string{`1.5`, `-0.5`, `1e20`, `99999999999999999999`, `1e400`, `true`, `[]`, `{}`,
+		`2147483648`, `9007199254740993`, `9007199254740992`} {
 		if _, err := DecodeStatus(payload(`"status":"INDEXED","attempts":` + attempts)); !errors.Is(err, ErrInvalidStatusEvent) {
 			t.Errorf("attempts %s: err = %v, want ErrInvalidStatusEvent", attempts, err)
 		}
@@ -179,7 +183,6 @@ func TestDecodeStatusRejects(t *testing.T) {
 		{"schema_version 2", []byte(`{"hash":"` + testHash + `","status":"INDEXED","attempts":0,"created_at":"2026-10-14T10:00:00Z","schema_version":2}`)},
 		{"schema_version 0", []byte(`{"hash":"` + testHash + `","status":"INDEXED","attempts":0,"created_at":"2026-10-14T10:00:00Z","schema_version":0}`)},
 		{"missing schema_version", []byte(`{"hash":"` + testHash + `","status":"INDEXED","attempts":0,"created_at":"2026-10-14T10:00:00Z"}`)},
-		{"bad created_at", []byte(`{"hash":"` + testHash + `","status":"INDEXED","attempts":0,"created_at":"yesterday","schema_version":1}`)},
 		{"malformed json", []byte(`{"hash":`)},
 		{"empty payload", []byte(``)},
 		{"json array", []byte(`[]`)},
@@ -195,6 +198,43 @@ func TestDecodeStatusRejects(t *testing.T) {
 				t.Fatalf("error %v does not wrap ErrInvalidStatusEvent", err)
 			}
 		})
+	}
+}
+
+// created_at is only logged. A value the schema's regex allows but time parsing rejects
+// ("2026-02-30...") must not make Go discard an otherwise valid status.
+func TestDecodeStatusToleratesUnparsableCreatedAt(t *testing.T) {
+	for _, ts := range []string{"yesterday", "2026-02-30T10:00:00Z", "2026-10-14T24:00:00Z", `2026-10-14T10:00:00Z\n`, ""} {
+		ev, err := DecodeStatus([]byte(`{"hash":"` + testHash + `","status":"INDEXED","attempts":0,"created_at":"` + ts + `","schema_version":1}`))
+		if err != nil {
+			t.Errorf("created_at %q rejected: %v", ts, err)
+			continue
+		}
+		if !ev.CreatedAt.IsZero() {
+			t.Errorf("created_at %q parsed to %v, want the zero time", ts, ev.CreatedAt)
+		}
+	}
+	if _, err := DecodeStatus([]byte(`{"hash":"` + testHash + `","status":"INDEXED","attempts":0,"created_at":123,"schema_version":1}`)); err != nil {
+		t.Errorf("non-string created_at rejected: %v", err)
+	}
+}
+
+func TestDecodeStatusMissingStatusSaysSo(t *testing.T) {
+	_, err := DecodeStatus([]byte(`{"hash":"` + testHash + `","attempts":0,"schema_version":1}`))
+	if err == nil || !strings.Contains(err.Error(), "status is required") {
+		t.Fatalf("err = %v, want 'status is required'", err)
+	}
+}
+
+// The discard path logs the error, so a huge field must not be echoed back whole.
+func TestDecodeStatusErrorDoesNotEchoLargeValues(t *testing.T) {
+	huge := `{"x":"` + strings.Repeat("a", 100000) + `"}`
+	_, err := DecodeStatus(payload(`"status":"INDEXED","attempts":` + huge))
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if len(err.Error()) > 300 {
+		t.Fatalf("error is %d bytes; it echoes the raw value", len(err.Error()))
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -59,24 +60,48 @@ func TestValidStatusFixtures(t *testing.T) {
 	}
 }
 
+// Each invalid fixture must be rejected for the reason in its name, so editing one into a
+// fixture that is invalid for a different reason does not go unnoticed.
 func TestInvalidStatusFixtures(t *testing.T) {
+	tests := map[string]string{
+		"status_attempts_missing.json":         "attempts must be present",
+		"status_attempts_negative.json":        "attempts must be present and >= 0",
+		"status_failed_missing_reason.json":    "reason is required",
+		"status_failed_missing_retryable.json": "retryable is required",
+		"status_hash_missing.json":             "hash is required",
+		"status_malformed.json":                "malformed json",
+		"status_status_missing.json":           "status is required",
+		"status_unknown_reason.json":           `unknown reason "OUT_OF_COFFEE"`,
+		"status_unknown_status.json":           `unknown status "DONE"`,
+		"status_unknown_version.json":          "unsupported schema_version 2",
+	}
+	for file, wantReason := range tests {
+		t.Run(file, func(t *testing.T) {
+			raw, err := os.ReadFile(filepath.Join(fixtureDir(), "invalid", file))
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = DecodeStatus(raw)
+			if !errors.Is(err, ErrInvalidStatusEvent) {
+				t.Fatalf("DecodeStatus error = %v, want ErrInvalidStatusEvent", err)
+			}
+			if !strings.Contains(err.Error(), wantReason) {
+				t.Fatalf("rejected for the wrong reason: %v (want %q)", err, wantReason)
+			}
+		})
+	}
+
 	files, err := filepath.Glob(filepath.Join(fixtureDir(), "invalid", "*.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(files) < 6 {
-		t.Fatalf("expected at least 6 invalid fixtures, found %d", len(files))
-	}
 	for _, f := range files {
-		t.Run(filepath.Base(f), func(t *testing.T) {
-			raw, err := os.ReadFile(f)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := DecodeStatus(raw); !errors.Is(err, ErrInvalidStatusEvent) {
-				t.Fatalf("DecodeStatus error = %v, want ErrInvalidStatusEvent", err)
-			}
-		})
+		if _, ok := tests[filepath.Base(f)]; !ok {
+			t.Errorf("invalid fixture %s is not covered by this test", filepath.Base(f))
+		}
+	}
+	if len(files) != len(tests) {
+		t.Errorf("found %d invalid fixtures, test lists %d", len(files), len(tests))
 	}
 }
 

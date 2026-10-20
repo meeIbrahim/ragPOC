@@ -21,6 +21,7 @@
     "attempts": {
       "type": "integer",
       "minimum": 0,
+      "maximum": 2147483647,
       "description": "Echoed unchanged from the ingest event."
     },
     "retryable": {
@@ -46,6 +47,7 @@
     "chunk_count": {
       "type": "integer",
       "minimum": 0,
+      "maximum": 2147483647,
       "description": "Informational. INDEXED only."
     },
     "created_at": {

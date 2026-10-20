@@ -71,16 +71,21 @@ type StatusEvent struct {
 	CreatedAt time.Time
 }
 
-// maxExactInt is the largest integer a float64 holds exactly. Larger values cannot be a real
-// attempt number or chunk count.
-const maxExactInt = 1 << 53
+// maxInteger bounds integer fields. It is the int32 range so the result is the same on every
+// platform, far below 2^53 where a float64 stops holding integers exactly, and far above any
+// real attempt number or chunk count. The JSON schema carries the same maximum.
+const maxInteger = math.MaxInt32
+
+// maxEchoed caps how much of a bad field value an error message repeats.
+const maxEchoed = 64
 
 // DecodeStatus parses and validates one status payload.
 //
 // Keys are matched exactly (encoding/json would match "Status" to "status"), the same as the
 // JSON schema and Python's json module, so both sides read the same status from one payload.
 // Integral numbers such as 1.0 or 1e0 are accepted for integer fields, as JSON Schema does.
-// null counts as absent. Unknown fields are ignored so a newer producer does not break this
+// null counts as absent. created_at is only logged, so an unparsable one is treated as absent
+// rather than discarding a valid status. Unknown fields are ignored so a newer producer does not break this
 // consumer, but unknown schema versions, statuses and reasons are rejected.
 // Every error wraps ErrInvalidStatusEvent.
 func DecodeStatus(payload []byte) (StatusEvent, error) {
@@ -114,6 +119,9 @@ func DecodeStatus(payload []byte) (StatusEvent, error) {
 	}
 	if ev.Hash == "" {
 		return StatusEvent{}, invalid("hash is required")
+	}
+	if ev.Status == "" {
+		return StatusEvent{}, invalid("status is required")
 	}
 	if attempts == nil || *attempts < 0 {
 		return StatusEvent{}, invalid("attempts must be present and >= 0")
@@ -195,11 +203,11 @@ func (r *fieldReader) integer(key string) *int {
 	}
 	f, err := strconv.ParseFloat(string(v), 64)
 	if err != nil {
-		r.fail(key, fmt.Errorf("not a number: %s", v))
+		r.fail(key, fmt.Errorf("not a number: %s", clip(v)))
 		return nil
 	}
-	if f != math.Trunc(f) || math.Abs(f) > maxExactInt {
-		r.fail(key, fmt.Errorf("not an integer in range: %s", v))
+	if f != math.Trunc(f) || math.Abs(f) > maxInteger {
+		r.fail(key, fmt.Errorf("not an integer in range: %s", clip(v)))
 		return nil
 	}
 	n := int(f)
@@ -213,9 +221,16 @@ func (r *fieldReader) timestamp(key string) time.Time {
 	}
 	var t time.Time
 	if err := json.Unmarshal(v, &t); err != nil {
-		r.fail(key, err)
+		return time.Time{}
 	}
 	return t
+}
+
+func clip(v json.RawMessage) string {
+	if len(v) <= maxEchoed {
+		return string(v)
+	}
+	return string(v[:maxEchoed]) + "..."
 }
 
 func describe(n *int) any {
