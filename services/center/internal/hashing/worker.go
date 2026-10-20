@@ -54,7 +54,7 @@ func DefaultConfig() Config {
 
 var (
 	// ErrLostClaim means another worker owns the intent now; the caller must not touch it.
-	ErrLostClaim = errors.New("lost claim")
+	ErrLostClaim = domain.ErrLostClaim
 	// ErrNoTempObject means the uploaded object is gone; retrying cannot help.
 	ErrNoTempObject = errors.New("missing temp object")
 )

@@ -76,7 +76,7 @@ func (s *Service) Get(ctx context.Context, id string) (*domain.Intent, error) {
 // ErrIntentExpired is returned by ConfirmUpload when the intent's presigned URL has expired.
 var ErrIntentExpired = errors.New("upload intent expired")
 var ErrIntentFailed = errors.New("upload intent failed")
-var ErrIntentNotFound = errors.New("upload intent not found")
+var ErrIntentNotFound = domain.ErrIntentNotFound
 var ErrIntentUnknown = errors.New("upload intent in unknown state")
 
 func (s *Service) ConfirmUpload(ctx context.Context, id string) (*domain.Intent, error) {

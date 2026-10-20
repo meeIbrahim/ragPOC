@@ -2,7 +2,6 @@ package sqlite
 
 import (
 	"center-service/internal/domain"
-	"center-service/internal/upload"
 	"context"
 	"database/sql"
 	"errors"
@@ -37,7 +36,7 @@ func (s *IntentStore) GetIntent(ctx context.Context, id string) (*domain.Intent,
 	var status string
 	if err := row.Scan(&i.ID, &i.FileName, &i.TempBucketPath, &i.Hash, &i.CreatedAt, &i.ExpiresAt, &i.UploadedAt, &status); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("upload_intent %s: %w", id, upload.ErrIntentNotFound)
+			return nil, fmt.Errorf("upload_intent %s: %w", id, domain.ErrIntentNotFound)
 		}
 		return nil, fmt.Errorf("select upload_intent: %w", err)
 	}

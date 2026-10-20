@@ -4,7 +4,6 @@ import (
 	"center-service/internal/domain"
 	"center-service/internal/events"
 	"context"
-	"errors"
 	"log/slog"
 	"os"
 	"time"
@@ -109,11 +108,6 @@ func (w *Worker) pass(ctx context.Context) {
 		w.processMessage(ctx, msg)
 	}
 }
-
-var (
-	ErrDocumentNotFound = errors.New("document not found")
-	ErrLostClaim        = errors.New("lost claim")
-)
 
 func (w *Worker) processMessage(ctx context.Context, msg *domain.OutboxMessage) {
 	jobCtx, cancel := context.WithTimeout(ctx, w.cfg.JobTimeout)

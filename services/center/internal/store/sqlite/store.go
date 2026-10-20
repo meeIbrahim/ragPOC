@@ -2,7 +2,6 @@ package sqlite
 
 import (
 	"center-service/internal/domain"
-	"center-service/internal/hashing"
 	"context"
 	"database/sql"
 	"fmt"
@@ -28,7 +27,7 @@ func NewStore(db *sql.DB) *Store {
 // StartIngestion records a hashed upload in one transaction: the document row (if the
 // hash is new) plus its outbox event, then the intent moves HASHING -> HASHED. The intent
 // update is fenced by claimedBy; if this worker lost its claim, nothing is written and
-// hashing.ErrLostClaim is returned.
+// domain.ErrLostClaim is returned.
 func (s *Store) StartIngestion(ctx context.Context, document *domain.Document, intentID string, claimedBy string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -70,7 +69,7 @@ func (s *Store) StartIngestion(ctx context.Context, document *domain.Document, i
 		return fmt.Errorf("update upload_intent to hashed: %w", err)
 	}
 	if n == 0 {
-		return hashing.ErrLostClaim
+		return domain.ErrLostClaim
 	}
 
 	return tx.Commit()
