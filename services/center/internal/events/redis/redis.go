@@ -15,6 +15,10 @@ type Client struct {
 	rdb             *redis.Client
 	IngestionStream string
 	StreamMaxLen    int64
+	// StatusStream and StatusGroup are the stream Python publishes ingest status to and the
+	// consumer group Go reads it with.
+	StatusStream string
+	StatusGroup  string
 }
 
 func NewClient(ctx context.Context, cfg config.RedisConfig) (*Client, error) {
@@ -27,7 +31,13 @@ func NewClient(ctx context.Context, cfg config.RedisConfig) (*Client, error) {
 		rdb.Close()
 		return nil, fmt.Errorf("failed to connect to redis: %w", err)
 	}
-	return &Client{rdb: rdb, IngestionStream: cfg.Stream, StreamMaxLen: cfg.StreamMaxLen}, nil
+	return &Client{
+		rdb:             rdb,
+		IngestionStream: cfg.Stream,
+		StreamMaxLen:    cfg.StreamMaxLen,
+		StatusStream:    cfg.StatusStream,
+		StatusGroup:     cfg.StatusConsumerGroup,
+	}, nil
 }
 
 func (c *Client) Close() error {
