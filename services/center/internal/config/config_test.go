@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -115,8 +116,12 @@ func TestLoadParsesAllSections(t *testing.T) {
 }
 
 func TestLoadRealConfig(t *testing.T) {
-	if _, err := Load(filepath.Join("..", "..", "..", "..", "config.toml")); err != nil {
+	cfg, err := Load(filepath.Join("..", "..", "..", "..", "config.toml"))
+	if err != nil {
 		t.Fatalf("repo config.toml: %v", err)
+	}
+	if len(cfg.UnknownKeys) != 0 {
+		t.Fatalf("repo config.toml has keys Go does not model: %v", cfg.UnknownKeys)
 	}
 }
 
@@ -137,8 +142,8 @@ func TestLoadRejectsInvalid(t *testing.T) {
 		{"job_timeout + grace > min_idle", `min_idle="20m"`, `min_idle="10m"`, "rag.consumer.min_idle"},
 		{"cleanup_idle == job_timeout", `consumer_cleanup_idle="1h"`, `consumer_cleanup_idle="15m"`, "rag.consumer.consumer_cleanup_idle"},
 		{"cleanup_idle < job_timeout", `consumer_cleanup_idle="1h"`, `consumer_cleanup_idle="5m"`, "rag.consumer.consumer_cleanup_idle"},
-		{"duration without unit", `job_timeout="15m"`, `job_timeout="15"`, "missing unit"},
-		{"duration not a string", `job_timeout="15m"`, `job_timeout=15`, "missing unit"},
+		{"duration without unit", `job_timeout="15m"`, `job_timeout="15"`, "invalid duration"},
+		{"duration not a string", `job_timeout="15m"`, `job_timeout=15`, "invalid duration"},
 		{"rag poison_threshold zero", `poison_threshold=3
 consumer_cleanup_idle="1h"
 
@@ -161,6 +166,18 @@ port=50051`, `[server]
 port=50051`, "rag_grpc.port"},
 		{"stale embedding_model key", `embedding_model="qwen3-embedding"`, `model="qwen3-embedding"`, "rag.embedding_model"},
 		{"zero call_timeout", `call_timeout="60s"`, `call_timeout="0s"`, "rag.call_timeout"},
+		{"compound duration", `job_timeout="15m"`, `job_timeout="14m60s"`, "invalid duration"},
+		{"missing redis stream", `stream="ingest.docs"`, `strem="ingest.docs"`, "redis.stream"},
+		{"missing redis host", `host="localhost"`, ``, "redis.host"},
+		{"zero redis port", `port=6379`, `port=0`, "redis.port"},
+		{"zero stream_max_len", `stream_max_len=324000`, `stream_max_len=0`, "redis.stream_max_len"},
+		{"missing minio url", `url="localhost:9000"`, ``, "minio.url"},
+		{"missing minio access_key", `access_key="minio_user"`, ``, "minio.access_key"},
+		{"missing minio secret_key", `secret_key="minio_password"`, ``, "minio.secret_key"},
+		{"missing upload_bucket", `upload_bucket="upload-bucket"`, ``, "minio.upload_bucket"},
+		{"missing ingestion_bucket", `ingestion_bucket="ingestion-bucket"`, ``, "minio.ingestion_bucket"},
+		{"missing go.sqlite_dir", `sqlite_dir="./go_sqlite_db"`, ``, "go.sqlite_dir"},
+		{"zero go.port", `port=8080`, `port=0`, "go.port"},
 		{"extension without dot", `allowed_extensions=[".pdf", ".txt", ".md"]`, `allowed_extensions=["pdf"]`, "allowed_extensions"},
 		{"missing status_stream", `status_stream="ingest.status"`, ``, "status_stream"},
 		{"missing status group", `status_consumer_group="center-status"`, ``, "status_consumer_group"},
@@ -185,11 +202,11 @@ port=50051`, "rag_grpc.port"},
 // Both PRD 4.5 timing rules are checked on the shared file, so a drift in either service's
 // copy fails at startup instead of reclaiming live jobs.
 func TestValidateBoundary(t *testing.T) {
-	body := strings.Replace(validTOML, `min_idle="20m"`, `min_idle="17m1s"`, 1)
+	body := strings.Replace(validTOML, `min_idle="20m"`, `min_idle="1021s"`, 1)
 	if _, err := Load(writeConfig(t, body)); err != nil {
 		t.Fatalf("min_idle just above job_timeout+grace must be valid: %v", err)
 	}
-	body = strings.Replace(validTOML, `consumer_cleanup_idle="1h"`, `consumer_cleanup_idle="15m1s"`, 1)
+	body = strings.Replace(validTOML, `consumer_cleanup_idle="1h"`, `consumer_cleanup_idle="901s"`, 1)
 	if _, err := Load(writeConfig(t, body)); err != nil {
 		t.Fatalf("cleanup_idle just above job_timeout must be valid: %v", err)
 	}
@@ -222,5 +239,60 @@ func TestLoadReportsAllProblemsTogether(t *testing.T) {
 		if !strings.Contains(err.Error(), key) {
 			t.Errorf("error %q does not mention %s", err, key)
 		}
+	}
+}
+
+// duration_vectors.json is shared with the Python config tests, so both services accept and
+// reject exactly the same duration strings.
+func TestDurationSharedVectors(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "contracts", "config", "duration_vectors.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var vectors struct {
+		Valid []struct {
+			Text    string `json:"text"`
+			Seconds int64  `json:"seconds"`
+		} `json:"valid"`
+		Invalid []string `json:"invalid"`
+	}
+	if err := json.Unmarshal(raw, &vectors); err != nil {
+		t.Fatal(err)
+	}
+	if len(vectors.Valid) == 0 || len(vectors.Invalid) == 0 {
+		t.Fatal("vector file is empty")
+	}
+	for _, v := range vectors.Valid {
+		var d Duration
+		if err := d.UnmarshalText([]byte(v.Text)); err != nil {
+			t.Errorf("%q: unexpected error %v", v.Text, err)
+			continue
+		}
+		if got := int64(d.Std() / time.Second); got != v.Seconds {
+			t.Errorf("%q = %ds, want %ds", v.Text, got, v.Seconds)
+		}
+	}
+	for _, text := range vectors.Invalid {
+		var d Duration
+		if err := d.UnmarshalText([]byte(text)); err == nil {
+			t.Errorf("%q: expected error, got %v", text, d.Std())
+		}
+	}
+}
+
+// Unknown keys must not fail Load (the Python service adds keys Go does not model), but they
+// are reported so a typo is visible.
+func TestLoadReportsUnknownKeys(t *testing.T) {
+	body := strings.Replace(validTOML, `top_k=5`, "top_k=5\nprompt_template=\"x\"", 1)
+	cfg, err := Load(writeConfig(t, body))
+	if err != nil {
+		t.Fatalf("unknown key must not fail Load: %v", err)
+	}
+	if len(cfg.UnknownKeys) != 1 || cfg.UnknownKeys[0] != "rag.prompt_template" {
+		t.Fatalf("UnknownKeys = %v", cfg.UnknownKeys)
+	}
+	clean, err := Load(writeConfig(t, validTOML))
+	if err != nil || len(clean.UnknownKeys) != 0 {
+		t.Fatalf("clean config: err=%v unknown=%v", err, clean.UnknownKeys)
 	}
 }

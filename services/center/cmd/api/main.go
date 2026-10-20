@@ -57,6 +57,9 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
+	if len(cfg.UnknownKeys) > 0 {
+		logger.Warn("config has keys this service does not read", "keys", cfg.UnknownKeys)
+	}
 
 	db, err := sqlite.Open(cfg)
 	if err != nil {

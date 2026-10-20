@@ -33,6 +33,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
+	if len(cfg.UnknownKeys) > 0 {
+		log.Printf("config has keys this service does not read: %v", cfg.UnknownKeys)
+	}
 
 	if err := os.MkdirAll(cfg.Go.SQLiteDir, 0o755); err != nil {
 		log.Fatalf("sqlite dir: %v", err)

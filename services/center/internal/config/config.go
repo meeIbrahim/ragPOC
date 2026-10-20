@@ -3,6 +3,7 @@ package config
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -18,12 +19,25 @@ type Config struct {
 	Redis     RedisConfig     `toml:"redis"`
 	Ingestion IngestionConfig `toml:"ingestion"`
 	Go        GoConfig        `toml:"go"`
+
+	// UnknownKeys lists keys in the file that Go does not model, such as ones only the Python
+	// service reads. They do not fail Load, so the callers log them to make a typo visible.
+	UnknownKeys []string `toml:"-"`
 }
+
+// durationPattern is the one duration grammar both services accept: an integer and a single
+// unit. It is deliberately narrower than time.ParseDuration (no compound, decimal, negative or
+// sub-second values) so the Python reader can match it exactly. The shared test vectors in
+// contracts/config/duration_vectors.json pin it.
+var durationPattern = regexp.MustCompile(`^[0-9]{1,6}(s|m|h)$`)
 
 // Duration is a time.Duration written in config.toml as a string such as "15m".
 type Duration time.Duration
 
 func (d *Duration) UnmarshalText(text []byte) error {
+	if !durationPattern.Match(text) {
+		return fmt.Errorf(`invalid duration %q: want an integer and one unit (s, m or h), e.g. "15m"`, text)
+	}
 	v, err := time.ParseDuration(string(text))
 	if err != nil {
 		return fmt.Errorf("invalid duration %q: %w", text, err)
@@ -116,8 +130,12 @@ type StatusConsumerConfig struct {
 // Load reads, parses and validates the TOML config file at path.
 func Load(path string) (*Config, error) {
 	var cfg Config
-	if _, err := toml.DecodeFile(path, &cfg); err != nil {
+	md, err := toml.DecodeFile(path, &cfg)
+	if err != nil {
 		return nil, fmt.Errorf("config: load %s: %w", path, err)
+	}
+	for _, key := range md.Undecoded() {
+		cfg.UnknownKeys = append(cfg.UnknownKeys, key.String())
 	}
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("config: %s: %w", path, err)
@@ -129,6 +147,29 @@ func Load(path string) (*Config, error) {
 func (c *Config) Validate() error {
 	var problems []string
 	add := func(format string, args ...any) { problems = append(problems, fmt.Sprintf(format, args...)) }
+
+	// Keys Go itself reads. A missing or misspelled key decodes to a zero value and would
+	// otherwise fail late and vaguely (for example XADD into a stream named "").
+	for _, f := range []struct{ name, v string }{
+		{"minio.url", c.Minio.URL},
+		{"minio.access_key", c.Minio.AccessKey},
+		{"minio.secret_key", c.Minio.SecretKey},
+		{"minio.upload_bucket", c.Minio.UploadBucket},
+		{"minio.ingestion_bucket", c.Minio.IngestionBucket},
+		{"redis.host", c.Redis.Host},
+		{"redis.stream", c.Redis.Stream},
+		{"go.sqlite_dir", c.Go.SQLiteDir},
+	} {
+		if f.v == "" {
+			add("%s must not be empty", f.name)
+		}
+	}
+	if c.Redis.Port <= 0 {
+		add("redis.port must be > 0")
+	}
+	if c.Redis.StreamMaxLen <= 0 {
+		add("redis.stream_max_len must be > 0")
+	}
 
 	// Renamed keys ([server] -> [rag_grpc], rag.model -> embedding_model) decode to zero values
 	// from a stale file, so require them explicitly.
