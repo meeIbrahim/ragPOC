@@ -289,11 +289,18 @@ func (w *Worker) claimAndProcess(ctx context.Context) error {
 // process hands the entry to the handler and acknowledges it when it is finished. It reports
 // whether the entry was finished.
 //
-// When the handler fails, the store's health decides what happens next. If the store cannot
-// take writes it is the cause: wait until it can and try the same entry again in place (it was
-// already delivered, so abandoning it would only start its poison clock). If the store is fine
-// the entry itself is the problem: leave it pending and let the caller move on.
+// When the handler fails, the store's health decides what happens next. Handle fails only on a
+// database error, so the failure is most likely the store's:
+//   - If the store cannot take writes, wait until it can and try the same entry again in place
+//     (it was already delivered, so abandoning it would only start its poison clock).
+//   - If the store looks fine, the cause may already have cleared (a lock released between the
+//     failure and the probe), so try once more before blaming the entry. An entry that still
+//     fails is left pending alone and the caller moves on.
+//
+// Every retry is preceded by a RetryDelay sleep, so a store that flips between failing and
+// passing its probe cannot turn this into a tight loop.
 func (w *Worker) process(ctx context.Context, e events.StreamEntry) bool {
+	retriedWhileHealthy := false
 	for {
 		if w.handler.Handle(ctx, e) {
 			w.ack(ctx, e.ID)
@@ -303,11 +310,18 @@ func (w *Worker) process(ctx context.Context, e events.StreamEntry) bool {
 			return false
 		}
 		checker, ok := w.handler.(healthChecker)
-		if !ok || checker.Healthy(ctx) == nil {
-			return false
+		if !ok {
+			return false // cannot tell a store problem from a bad entry
 		}
-		w.waitUntilHealthy(ctx)
-		if ctx.Err() != nil {
+		if checker.Healthy(ctx) != nil {
+			w.waitUntilHealthy(ctx)
+		} else {
+			if retriedWhileHealthy {
+				return false
+			}
+			retriedWhileHealthy = true
+		}
+		if !w.sleep(ctx, w.cfg.RetryDelay) {
 			return false
 		}
 	}

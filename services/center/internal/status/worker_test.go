@@ -564,8 +564,8 @@ func TestReadOnceHandlesTheNeighboursOfAFailingEntry(t *testing.T) {
 	if src.count("ack:1-0") != 0 {
 		t.Error("the failing entry was acked")
 	}
-	if src.count("handle:1-0") != 1 {
-		t.Errorf("the failing entry was retried in place although the store is healthy: %v", src.events())
+	if src.count("handle:1-0") != 2 {
+		t.Errorf("a failing entry gets exactly one extra try (it may have failed on a store problem that already cleared): %v", src.events())
 	}
 }
 
@@ -644,8 +644,8 @@ func TestRunDoesNotReadWhileTheStoreIsUnhealthy(t *testing.T) {
 	if reads != 2 {
 		t.Fatalf("%d reads: one failed batch plus one after recovery expected", reads)
 	}
-	if handles != 2 {
-		t.Fatalf("entry handled %d times, want 2: once, then retried in place after the store recovered", handles)
+	if handles != 3 {
+		t.Fatalf("entry handled %d times, want 3: once, retried in place after the store recovered, and once more because it still failed with a healthy store", handles)
 	}
 }
 
@@ -848,5 +848,71 @@ func TestPoisonLogClipsAHugePayload(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), "9-0") {
 		t.Fatal("the poison log lost the entry id")
+	}
+}
+
+// Handle returns false only on a database error. A failure whose cause has already cleared by
+// the time of the probe must not be taken for a bad entry: one more try in place absorbs it.
+func TestFailureThatClearedBeforeTheProbeIsAbsorbedByOneRetry(t *testing.T) {
+	src := &fakeSource{}
+	src.readFn = func(context.Context, string, time.Duration, int64) ([]events.StreamEntry, error) {
+		return []events.StreamEntry{entry("1-0")}, nil
+	}
+	calls := 0
+	h := healthHandler{
+		handlerFunc: func(context.Context, events.StreamEntry) bool {
+			calls++
+			return calls > 1 // a lock released between the failure and the probe
+		},
+		healthy: func(context.Context) error { return nil },
+	}
+	w := newWorker(src, h, testConfig())
+
+	if err := w.readOnce(context.Background()); err != nil {
+		t.Fatalf("err = %v, want nil: the retry succeeded", err)
+	}
+	if src.count("ack:1-0") != 1 {
+		t.Fatalf("entry not acked after the retry: %v", src.events())
+	}
+}
+
+// A store that flips between failing and passing its probe must not turn the retry into a
+// tight loop that hammers the database and floods the log.
+func TestFlappingStoreDoesNotSpinTheRetryLoop(t *testing.T) {
+	src := &fakeSource{}
+	cfg := testConfig()
+	cfg.RetryDelay = 50 * time.Millisecond
+	src.readFn = func(context.Context, string, time.Duration, int64) ([]events.StreamEntry, error) {
+		return []events.StreamEntry{entry("1-0")}, nil
+	}
+	var mu sync.Mutex
+	handles, probes := 0, 0
+	h := healthHandler{
+		handlerFunc: func(context.Context, events.StreamEntry) bool {
+			mu.Lock()
+			handles++
+			mu.Unlock()
+			return false
+		},
+		healthy: func(context.Context) error {
+			mu.Lock()
+			defer mu.Unlock()
+			probes++
+			if probes%2 == 1 {
+				return errors.New("database is locked")
+			}
+			return nil
+		},
+	}
+	w := newWorker(src, h, cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
+	defer cancel()
+	_ = w.readOnce(ctx)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if handles > 12 || probes > 30 {
+		t.Fatalf("%d handles and %d probes in 400ms at a 50ms retry delay: the retry loop is spinning", handles, probes)
 	}
 }
