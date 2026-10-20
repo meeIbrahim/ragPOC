@@ -1,0 +1,2 @@
+# Contract fixtures are compared byte for byte by the Go and Python tests; never rewrite line endings.
+contracts/** -text

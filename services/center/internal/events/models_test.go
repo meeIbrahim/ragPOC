@@ -62,8 +62,13 @@ func TestIngestEventFixtures(t *testing.T) {
 				t.Fatal(err)
 			}
 			got = append(got, '\n')
-			path := filepath.Join(fixtureDir(), fx.file)
+			// Guards against regenerating blindly after a change to the time format. They run
+			// before -update writes, so a bad format can never reach the fixture on disk.
+			if !strings.Contains(string(got), `"created_at":"`+fx.wantCreatedAt+`"`) {
+				t.Fatalf("created_at is not %s in %s", fx.wantCreatedAt, got)
+			}
 
+			path := filepath.Join(fixtureDir(), fx.file)
 			if *update {
 				if err := os.WriteFile(path, got, 0o644); err != nil {
 					t.Fatal(err)
@@ -75,11 +80,6 @@ func TestIngestEventFixtures(t *testing.T) {
 			}
 			if !bytes.Equal(got, want) {
 				t.Fatalf("fixture %s is stale; run `go test ./internal/events -update` if the change is intended\n got: %s\nwant: %s", fx.file, got, want)
-			}
-
-			// Guards against regenerating blindly after a change to the time format.
-			if !strings.Contains(string(got), `"created_at":"`+fx.wantCreatedAt+`"`) {
-				t.Errorf("created_at is not %s in %s", fx.wantCreatedAt, got)
 			}
 
 			var back StreamIngestionEvent

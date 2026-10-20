@@ -13,16 +13,16 @@ import (
 func TestValidStatusFixtures(t *testing.T) {
 	tests := []struct {
 		file       string
-		status     IngestionStatus
+		status     Outcome
 		attempts   int
 		retryable  *bool
 		reason     FailureReason
 		chunkCount *int
 	}{
-		{"status_indexed.json", StatusIndexed, 0, nil, "", intPtr(12)},
-		{"status_failed_retryable.json", StatusFailed, 1, boolPtr(true), ReasonDependencyUnavailable, nil},
-		{"status_failed_permanent.json", StatusFailed, 0, boolPtr(false), ReasonUnsupportedType, nil},
-		{"status_failed_poison.json", StatusFailed, 2, boolPtr(false), ReasonPoisonMessage, nil},
+		{"status_indexed.json", OutcomeIndexed, 0, nil, "", intPtr(12)},
+		{"status_failed_retryable.json", OutcomeFailed, 1, boolPtr(true), ReasonDependencyUnavailable, nil},
+		{"status_failed_permanent.json", OutcomeFailed, 0, boolPtr(false), ReasonUnsupportedType, nil},
+		{"status_failed_poison.json", OutcomeFailed, 2, boolPtr(false), ReasonPoisonMessage, nil},
 	}
 
 	listed := map[string]bool{}

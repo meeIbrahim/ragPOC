@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"testing"
 
@@ -42,18 +41,34 @@ func NewSQLite(t testing.TB) *sql.DB {
 }
 
 // migrationFiles returns the up migrations in version order. The migrate binary reads them
-// from an embedded FS, so tests read the same files from disk.
+// from an embedded FS, so tests read the same files from disk. The module root is found from
+// the working directory (go test runs in the package directory) because runtime.Caller paths
+// are rewritten by -trimpath.
 func migrationFiles(t testing.TB) []string {
 	t.Helper()
-	_, thisFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("cannot locate testutil source")
-	}
-	dir := filepath.Join(filepath.Dir(thisFile), "..", "..", "migrations")
+	dir := filepath.Join(moduleRoot(t), "migrations")
 	files, err := filepath.Glob(filepath.Join(dir, "*.up.sql"))
 	if err != nil || len(files) == 0 {
 		t.Fatalf("no migrations found in %s (err %v)", dir, err)
 	}
 	sort.Strings(files)
 	return files
+}
+
+func moduleRoot(t testing.TB) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("go.mod not found above the test's working directory")
+		}
+		dir = parent
+	}
 }

@@ -13,12 +13,12 @@ func payload(fields string) []byte {
 		`"created_at":"2026-10-14T10:00:00.123456Z","schema_version":1,` + fields + `}`)
 }
 
-func TestDecodeStatusIndexed(t *testing.T) {
+func TestDecodeOutcomeIndexed(t *testing.T) {
 	ev, err := DecodeStatus(payload(`"status":"INDEXED","attempts":2,"chunk_count":12`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ev.Status != StatusIndexed || ev.Hash != testHash || ev.Attempts != 2 {
+	if ev.Status != OutcomeIndexed || ev.Hash != testHash || ev.Attempts != 2 {
 		t.Errorf("event = %+v", ev)
 	}
 	if ev.ChunkCount == nil || *ev.ChunkCount != 12 {
@@ -29,7 +29,7 @@ func TestDecodeStatusIndexed(t *testing.T) {
 	}
 }
 
-func TestDecodeStatusIndexedWithoutOptionals(t *testing.T) {
+func TestDecodeOutcomeIndexedWithoutOptionals(t *testing.T) {
 	ev, err := DecodeStatus(payload(`"status":"INDEXED","attempts":0`))
 	if err != nil {
 		t.Fatal(err)
@@ -39,7 +39,7 @@ func TestDecodeStatusIndexedWithoutOptionals(t *testing.T) {
 	}
 }
 
-func TestDecodeStatusFailed(t *testing.T) {
+func TestDecodeOutcomeFailed(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		fields    string
@@ -55,7 +55,7 @@ func TestDecodeStatusFailed(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if ev.Status != StatusFailed || ev.Retryable == nil || *ev.Retryable != tc.retryable || ev.Reason != tc.reason {
+			if ev.Status != OutcomeFailed || ev.Retryable == nil || *ev.Retryable != tc.retryable || ev.Reason != tc.reason {
 				t.Errorf("event = %+v", ev)
 			}
 		})
@@ -78,6 +78,83 @@ func TestDecodeStatusAcceptsEveryPRDReason(t *testing.T) {
 func TestDecodeStatusIgnoresUnknownFields(t *testing.T) {
 	if _, err := DecodeStatus(payload(`"status":"INDEXED","attempts":0,"future_field":{"a":1}`)); err != nil {
 		t.Fatalf("unknown field rejected: %v", err)
+	}
+}
+
+// encoding/json matches keys case-insensitively. A producer's stray "Status" key must never
+// override the real "status", or a FAILED document could be recorded as INDEXED. The JSON
+// schema and Python match keys exactly, so Go has to as well.
+func TestDecodeStatusMatchesKeysExactly(t *testing.T) {
+	ev, err := DecodeStatus(payload(`"status":"FAILED","retryable":true,"reason":"INTERNAL","attempts":0,"Status":"INDEXED","ATTEMPTS":9`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ev.Status != OutcomeFailed || ev.Attempts != 0 {
+		t.Fatalf("a differently cased key overrode the real one: %+v", ev)
+	}
+
+	// Only a wrongly cased key present means the real key is absent.
+	_, err = DecodeStatus([]byte(`{"hash":"` + testHash + `","STATUS":"INDEXED","attempts":0,"created_at":"2026-10-14T10:00:00Z","schema_version":1}`))
+	if !errors.Is(err, ErrInvalidStatusEvent) {
+		t.Fatalf("err = %v, want ErrInvalidStatusEvent for a missing exact-case status", err)
+	}
+}
+
+// JSON Schema (and so a Python producer that passes it) treats 1.0 and 1e0 as the integer 1.
+// Discarding such an event would leave the document PROCESSING, so integral values are accepted.
+func TestDecodeStatusAcceptsIntegralNumbers(t *testing.T) {
+	for _, attempts := range []string{`1`, `1.0`, `1e0`, `1E0`, `0.1e1`, `-0`} {
+		ev, err := DecodeStatus(payload(`"status":"INDEXED","attempts":` + attempts))
+		if err != nil {
+			t.Errorf("attempts %s rejected: %v", attempts, err)
+			continue
+		}
+		want := 1
+		if attempts == `-0` {
+			want = 0
+		}
+		if ev.Attempts != want {
+			t.Errorf("attempts %s = %d, want %d", attempts, ev.Attempts, want)
+		}
+	}
+	ev, err := DecodeStatus(payload(`"status":"INDEXED","attempts":0,"chunk_count":2.0`))
+	if err != nil || ev.ChunkCount == nil || *ev.ChunkCount != 2 {
+		t.Errorf("chunk_count 2.0: %+v, err %v", ev, err)
+	}
+	if _, err := DecodeStatus([]byte(`{"hash":"` + testHash + `","status":"INDEXED","attempts":0,"created_at":"2026-10-14T10:00:00Z","schema_version":1.0}`)); err != nil {
+		t.Errorf("schema_version 1.0 rejected: %v", err)
+	}
+}
+
+func TestDecodeStatusRejectsNonIntegralNumbers(t *testing.T) {
+	for _, attempts := range []string{`1.5`, `-0.5`, `1e20`, `99999999999999999999`, `1e400`, `true`, `[]`, `{}`} {
+		if _, err := DecodeStatus(payload(`"status":"INDEXED","attempts":` + attempts)); !errors.Is(err, ErrInvalidStatusEvent) {
+			t.Errorf("attempts %s: err = %v, want ErrInvalidStatusEvent", attempts, err)
+		}
+	}
+}
+
+// null means "absent". The consumer only logs id and created_at, so Go does not require them
+// even though the schema does; the handler must not assume CreatedAt is set.
+func TestDecodeStatusTreatsNullAsAbsent(t *testing.T) {
+	ev, err := DecodeStatus([]byte(`{"hash":"` + testHash + `","status":"INDEXED","attempts":0,"schema_version":1,` +
+		`"chunk_count":null,"retryable":null,"reason":null,"detail":null,"id":null,"created_at":null}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ev.ChunkCount != nil || ev.Retryable != nil || ev.Reason != "" || ev.ID != "" || !ev.CreatedAt.IsZero() {
+		t.Errorf("null fields not treated as absent: %+v", ev)
+	}
+	for name, body := range map[string]string{
+		"attempts null":            `{"hash":"` + testHash + `","status":"INDEXED","attempts":null,"schema_version":1}`,
+		"schema_version null":      `{"hash":"` + testHash + `","status":"INDEXED","attempts":0,"schema_version":null}`,
+		"status null":              `{"hash":"` + testHash + `","status":null,"attempts":0,"schema_version":1}`,
+		"hash null":                `{"hash":null,"status":"INDEXED","attempts":0,"schema_version":1}`,
+		"retryable null on FAILED": `{"hash":"` + testHash + `","status":"FAILED","attempts":0,"retryable":null,"reason":"INTERNAL","schema_version":1}`,
+	} {
+		if _, err := DecodeStatus([]byte(body)); !errors.Is(err, ErrInvalidStatusEvent) {
+			t.Errorf("%s: err = %v, want ErrInvalidStatusEvent", name, err)
+		}
 	}
 }
 
