@@ -39,6 +39,29 @@ func New(cfg config.MinioConfig) (*Client, error) {
 	}, nil
 }
 
+// EnsureBuckets creates the upload and ingestion buckets if they are missing. Go owns both
+// buckets; the Python service creates none.
+func (c *Client) EnsureBuckets(ctx context.Context) error {
+	for _, bucket := range []string{c.uploadBucket, c.ingestionBucket} {
+		exists, err := c.inner.BucketExists(ctx, bucket)
+		if err != nil {
+			return fmt.Errorf("minio: check bucket %s: %w", bucket, err)
+		}
+		if exists {
+			continue
+		}
+		if err := c.inner.MakeBucket(ctx, bucket, miniogo.MakeBucketOptions{}); err != nil {
+			// Another migrate run may have created it between the check and the create.
+			switch miniogo.ToErrorResponse(err).Code {
+			case "BucketAlreadyOwnedByYou", "BucketAlreadyExists":
+				continue
+			}
+			return fmt.Errorf("minio: create bucket %s: %w", bucket, err)
+		}
+	}
+	return nil
+}
+
 // IngestionObjectKey returns the sharded ingestion bucket key for sha256Hash,
 // e.g. "ab/c9/abc9...".
 func IngestionObjectKey(sha256Hash string) string {

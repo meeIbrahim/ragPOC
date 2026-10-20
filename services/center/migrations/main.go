@@ -2,19 +2,24 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"errors"
 	"flag"
 	"log"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/sqlite"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
 
 	"center-service/internal/config"
+	"center-service/internal/storage/minio"
 )
+
+const bucketTimeout = 30 * time.Second
 
 //go:embed *.sql
 var migrationFiles embed.FS
@@ -55,4 +60,18 @@ func main() {
 	}
 
 	log.Printf("migrations applied to %s", dbPath)
+
+	if *down {
+		return
+	}
+	minioClient, err := minio.New(cfg.Minio)
+	if err != nil {
+		log.Fatalf("minio: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), bucketTimeout)
+	defer cancel()
+	if err := minioClient.EnsureBuckets(ctx); err != nil {
+		log.Fatalf("buckets: %v", err)
+	}
+	log.Printf("buckets ready: %s, %s", cfg.Minio.UploadBucket, cfg.Minio.IngestionBucket)
 }
