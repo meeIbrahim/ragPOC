@@ -20,6 +20,7 @@ import (
 	"center-service/internal/hashing"
 	"center-service/internal/httpapi"
 	"center-service/internal/outbox"
+	"center-service/internal/status"
 	"center-service/internal/storage/minio"
 	"center-service/internal/store/sqlite"
 	"center-service/internal/upload"
@@ -37,6 +38,8 @@ var (
 	_ outbox.Store    = (*sqlite.Store)(nil)
 	_ upload.Store    = (*sqlite.Store)(nil)
 	_ outbox.Producer = (*redisevents.Producer)(nil)
+	_ status.Store    = (*sqlite.Store)(nil)
+	_ status.Source   = (*redisevents.StatusSource)(nil)
 )
 
 func main() {
@@ -124,6 +127,20 @@ func run() error {
 	go func() {
 		defer wg.Done()
 		outboxSweeper.Run(ctx)
+	}()
+
+	statusHandler := status.NewHandler(store, cfg.Ingestion.MaxAttempts, cfg.Go.StatusConsumer.EntryTimeout.Std(), logger)
+	statusWorker := status.NewWorker(
+		status.NewWorkerID(),
+		status.WorkerConfigFrom(cfg.Go.StatusConsumer),
+		redisevents.NewStatusSource(redisClient, logger),
+		statusHandler,
+		logger,
+	)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		statusWorker.Run(ctx)
 	}()
 
 	svc := upload.NewService(store, minioClient, logger)
