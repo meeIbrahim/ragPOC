@@ -29,28 +29,43 @@ const (
 	outboxWorkers = 2
 )
 
-// The sqlite store must satisfy the outbox worker's persistence needs.
-var _ outbox.Store = (*sqlite.Store)(nil)
+// The sqlite store and redis producer must satisfy the consumer-side interfaces the workers
+// and the upload service declare.
+var (
+	_ hashing.Store   = (*sqlite.Store)(nil)
+	_ outbox.Store    = (*sqlite.Store)(nil)
+	_ upload.Store    = (*sqlite.Store)(nil)
+	_ outbox.Producer = (*redisevents.Producer)(nil)
+)
 
 func main() {
+	if err := run(); err != nil {
+		log.Printf("center service: %v", err)
+		os.Exit(1)
+	}
+}
+
+// run holds everything that needs deferred cleanup, so an error returns through the defers
+// instead of exiting the process past them.
+func run() error {
 	configPath := flag.String("config", "config.toml", "path to config.toml")
 	flag.Parse()
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
-		log.Fatalf("config: %v", err)
+		return fmt.Errorf("config: %w", err)
 	}
 
 	db, err := sqlite.Open(cfg)
 	if err != nil {
-		log.Fatalf("Error Opening Database: %v", err)
+		return fmt.Errorf("open database: %w", err)
 	}
 	defer db.Close()
 
 	minioClient, err := minio.New(cfg.Minio)
 	if err != nil {
-		log.Fatalf("Error Creating Minio Client: %v", err)
+		return fmt.Errorf("create minio client: %w", err)
 	}
 
 	// Cancelled on Ctrl-C / SIGTERM; stops the HTTP server, hash and outbox workers, and sweepers.
@@ -59,7 +74,7 @@ func main() {
 
 	redisClient, err := redisevents.NewClient(ctx, cfg.Redis)
 	if err != nil {
-		log.Fatalf("Error Creating Redis Client: %v", err)
+		return fmt.Errorf("create redis client: %w", err)
 	}
 	defer redisClient.Close()
 
@@ -104,7 +119,9 @@ func main() {
 		Addr:    fmt.Sprintf(":%d", cfg.Go.Port),
 		Handler: httpapi.NewRouter(svc, logger, cfg.Ingestion.AllowedExtensions),
 	}
+	shutdownDone := make(chan struct{})
 	go func() {
+		defer close(shutdownDone)
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -114,9 +131,14 @@ func main() {
 	}()
 
 	log.Printf("center service starting on %s", server.Addr)
-	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Fatalf("server: %v", err)
-	}
+	serveErr := server.ListenAndServe()
+	// A server that failed to start must still stop the workers, or wg.Wait blocks forever.
+	stop()
+	<-shutdownDone
 	wg.Wait()
+	if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+		return fmt.Errorf("server: %w", serveErr)
+	}
 	log.Printf("center service stopped")
+	return nil
 }
