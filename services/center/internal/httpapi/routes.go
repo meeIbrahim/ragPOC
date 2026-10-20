@@ -9,8 +9,8 @@ import (
 // NewRouter builds the root mux, dispatching by leading path prefix to each
 // service's own route table (each service's Routes() sees paths with its
 // prefix already stripped).
-func NewRouter(svc *upload.Service, logger *slog.Logger) http.Handler {
-	uploadHandlers := upload.NewHandlers(svc, logger)
+func NewRouter(svc *upload.Service, logger *slog.Logger, allowedExtensions []string) http.Handler {
+	uploadHandlers := upload.NewHandlers(svc, logger, allowedExtensions)
 
 	mux := http.NewServeMux()
 	// bare "/upload" handled directly: StripPrefix would reduce it to an empty

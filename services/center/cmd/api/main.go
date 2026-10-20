@@ -102,7 +102,7 @@ func main() {
 	svc := upload.NewService(store, minioClient, logger)
 	server := &http.Server{
 		Addr:    fmt.Sprintf(":%d", cfg.Go.Port),
-		Handler: httpapi.NewRouter(svc, logger),
+		Handler: httpapi.NewRouter(svc, logger, cfg.Ingestion.AllowedExtensions),
 	}
 	go func() {
 		<-ctx.Done()

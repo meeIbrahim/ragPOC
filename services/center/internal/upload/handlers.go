@@ -3,18 +3,29 @@ package upload
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"path/filepath"
+	"strings"
 	"time"
 )
 
 type Handlers struct {
-	svc    *Service
-	logger *slog.Logger
+	svc               *Service
+	logger            *slog.Logger
+	allowedExtensions map[string]struct{}
 }
 
-func NewHandlers(svc *Service, logger *slog.Logger) *Handlers {
-	return &Handlers{svc: svc, logger: logger}
+// NewHandlers builds the upload handlers. allowedExtensions (e.g. ".pdf") are matched
+// case-insensitively. This is an early UX check only: the RAG service stays the authority on
+// which file types it can ingest.
+func NewHandlers(svc *Service, logger *slog.Logger, allowedExtensions []string) *Handlers {
+	allowed := make(map[string]struct{}, len(allowedExtensions))
+	for _, ext := range allowedExtensions {
+		allowed[strings.ToLower(ext)] = struct{}{}
+	}
+	return &Handlers{svc: svc, logger: logger, allowedExtensions: allowed}
 }
 
 type UploadDocumentRequest struct {
@@ -51,6 +62,14 @@ func (h *Handlers) CreateUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.FileName == "" {
 		http.Error(w, "filename is required", http.StatusBadRequest)
+		return
+	}
+
+	if ext := strings.ToLower(filepath.Ext(req.FileName)); !h.extensionAllowed(ext) {
+		if ext == "" {
+			ext = "(none)"
+		}
+		http.Error(w, fmt.Sprintf("unsupported file extension: %s", ext), http.StatusBadRequest)
 		return
 	}
 
@@ -134,6 +153,11 @@ func (h *Handlers) GetUploadStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handlers) extensionAllowed(ext string) bool {
+	_, ok := h.allowedExtensions[ext]
+	return ok
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {
