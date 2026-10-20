@@ -1,4 +1,4 @@
-.PHONY: grpc-generate run_migrations run_worker up down go_migrate go_migrate_down
+.PHONY: grpc-generate run_migrations run_worker test up down go_migrate go_migrate_down
 
 # gRPC
 grpc-generate:
@@ -9,12 +9,17 @@ grpc-generate:
 		--grpc_python_out=./services/rag-service/src/generated \
 		./protos/rag/v1/rag.proto
 
-run_migrations: up
-	uv run src/migration/main.py
-	docker compose down
+# Needs Qdrant (`make up`); needs no Ollama and leaves the stack running. MinIO buckets are
+# created by `make go_migrate`.
+run_migrations:
+	cd services/rag-service && uv run python -m migration.main
 
 run_worker:
-	uv run python -m rag.consumer
+	cd services/rag-service && uv run python -m rag.consumer
+
+test:
+	cd services/center && go test -race ./...
+	cd services/rag-service && uv run pytest
 
 go_migrate:
 	go build -C services/center -o ../../bin/migrate ./migrations
