@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -78,6 +79,14 @@ func run() error {
 	}
 	defer redisClient.Close()
 
+	// Bind the port before any worker starts, so an instance that cannot serve exits without
+	// claiming rows or publishing events.
+	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", cfg.Go.Port))
+	if err != nil {
+		return fmt.Errorf("listen: %w", err)
+	}
+	defer listener.Close()
+
 	store := sqlite.NewStore(db)
 
 	hashCfg := hashing.DefaultConfig()
@@ -116,7 +125,6 @@ func run() error {
 
 	svc := upload.NewService(store, minioClient, logger)
 	server := &http.Server{
-		Addr:    fmt.Sprintf(":%d", cfg.Go.Port),
 		Handler: httpapi.NewRouter(svc, logger, cfg.Ingestion.AllowedExtensions),
 	}
 	shutdownDone := make(chan struct{})
@@ -130,8 +138,8 @@ func run() error {
 		}
 	}()
 
-	log.Printf("center service starting on %s", server.Addr)
-	serveErr := server.ListenAndServe()
+	log.Printf("center service starting on %s", listener.Addr())
+	serveErr := server.Serve(listener)
 	// A server that failed to start must still stop the workers, or wg.Wait blocks forever.
 	stop()
 	<-shutdownDone

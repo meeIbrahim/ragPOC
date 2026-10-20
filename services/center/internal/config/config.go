@@ -130,16 +130,37 @@ func (c *Config) Validate() error {
 	var problems []string
 	add := func(format string, args ...any) { problems = append(problems, fmt.Sprintf(format, args...)) }
 
+	// Renamed keys ([server] -> [rag_grpc], rag.model -> embedding_model) decode to zero values
+	// from a stale file, so require them explicitly.
+	if c.RAGGRPC.Port <= 0 {
+		add("rag_grpc.port must be > 0")
+	}
+	if c.Go.Port <= 0 {
+		add("go.port must be > 0")
+	}
+	if c.RAG.Collection == "" {
+		add("rag.collection must not be empty")
+	}
+	if c.RAG.EmbeddingModel == "" {
+		add("rag.embedding_model must not be empty")
+	}
+	if c.RAG.CallTimeout <= 0 {
+		add("rag.call_timeout must be > 0")
+	}
+
 	rc := c.RAG.Consumer
-	for name, d := range map[string]Duration{
-		"rag.consumer.job_timeout":           rc.JobTimeout,
-		"rag.consumer.watchdog_grace":        rc.WatchdogGrace,
-		"rag.consumer.min_idle":              rc.MinIdle,
-		"rag.consumer.recovery_interval":     rc.RecoveryInterval,
-		"rag.consumer.consumer_cleanup_idle": rc.ConsumerCleanupIdle,
+	for _, f := range []struct {
+		name string
+		d    Duration
+	}{
+		{"rag.consumer.job_timeout", rc.JobTimeout},
+		{"rag.consumer.watchdog_grace", rc.WatchdogGrace},
+		{"rag.consumer.min_idle", rc.MinIdle},
+		{"rag.consumer.recovery_interval", rc.RecoveryInterval},
+		{"rag.consumer.consumer_cleanup_idle", rc.ConsumerCleanupIdle},
 	} {
-		if d <= 0 {
-			add("%s must be > 0", name)
+		if f.d <= 0 {
+			add("%s must be > 0", f.name)
 		}
 	}
 	if rc.PoisonThreshold < 1 {
@@ -157,14 +178,17 @@ func (c *Config) Validate() error {
 	}
 
 	sc := c.Go.StatusConsumer
-	for name, d := range map[string]Duration{
-		"go.status_consumer.entry_timeout":         sc.EntryTimeout,
-		"go.status_consumer.min_idle":              sc.MinIdle,
-		"go.status_consumer.recovery_interval":     sc.RecoveryInterval,
-		"go.status_consumer.consumer_cleanup_idle": sc.ConsumerCleanupIdle,
+	for _, f := range []struct {
+		name string
+		d    Duration
+	}{
+		{"go.status_consumer.entry_timeout", sc.EntryTimeout},
+		{"go.status_consumer.min_idle", sc.MinIdle},
+		{"go.status_consumer.recovery_interval", sc.RecoveryInterval},
+		{"go.status_consumer.consumer_cleanup_idle", sc.ConsumerCleanupIdle},
 	} {
-		if d <= 0 {
-			add("%s must be > 0", name)
+		if f.d <= 0 {
+			add("%s must be > 0", f.name)
 		}
 	}
 	if sc.PoisonThreshold < 1 {
@@ -178,8 +202,10 @@ func (c *Config) Validate() error {
 		add("ingestion.allowed_extensions must not be empty")
 	}
 	for _, ext := range c.Ingestion.AllowedExtensions {
-		if !strings.HasPrefix(ext, ".") || len(ext) < 2 {
-			add("ingestion.allowed_extensions entry %q must start with '.'", ext)
+		// The upload check matches filepath.Ext, which is only the text after the last dot,
+		// so ".tar.gz" or an entry with whitespace could never match.
+		if !strings.HasPrefix(ext, ".") || len(ext) < 2 || strings.ContainsAny(ext[1:], "./\\ \t") {
+			add("ingestion.allowed_extensions entry %q must be one extension such as \".pdf\"", ext)
 		}
 	}
 

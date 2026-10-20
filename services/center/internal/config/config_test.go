@@ -133,27 +133,34 @@ func TestLoadRejectsInvalid(t *testing.T) {
 		new     string
 		wantErr string
 	}{
-		{"job_timeout + grace == min_idle", `min_idle="20m"`, `min_idle="17m"`, "min_idle"},
-		{"job_timeout + grace > min_idle", `min_idle="20m"`, `min_idle="10m"`, "min_idle"},
-		{"cleanup_idle == job_timeout", `consumer_cleanup_idle="1h"`, `consumer_cleanup_idle="15m"`, "consumer_cleanup_idle"},
-		{"cleanup_idle < job_timeout", `consumer_cleanup_idle="1h"`, `consumer_cleanup_idle="5m"`, "consumer_cleanup_idle"},
-		{"duration without unit", `job_timeout="15m"`, `job_timeout="15"`, "job_timeout"},
-		{"duration not a string", `job_timeout="15m"`, `job_timeout=15`, "job_timeout"},
+		{"job_timeout + grace == min_idle", `min_idle="20m"`, `min_idle="17m"`, "rag.consumer.min_idle"},
+		{"job_timeout + grace > min_idle", `min_idle="20m"`, `min_idle="10m"`, "rag.consumer.min_idle"},
+		{"cleanup_idle == job_timeout", `consumer_cleanup_idle="1h"`, `consumer_cleanup_idle="15m"`, "rag.consumer.consumer_cleanup_idle"},
+		{"cleanup_idle < job_timeout", `consumer_cleanup_idle="1h"`, `consumer_cleanup_idle="5m"`, "rag.consumer.consumer_cleanup_idle"},
+		{"duration without unit", `job_timeout="15m"`, `job_timeout="15"`, "missing unit"},
+		{"duration not a string", `job_timeout="15m"`, `job_timeout=15`, "missing unit"},
 		{"rag poison_threshold zero", `poison_threshold=3
 consumer_cleanup_idle="1h"
 
 [redis]`, `poison_threshold=0
 consumer_cleanup_idle="1h"
 
-[redis]`, "poison_threshold"},
-		{"status entry_timeout zero", `entry_timeout="5s"`, `entry_timeout="0s"`, "entry_timeout"},
-		{"status recovery_interval zero", `recovery_interval="30s"`, `recovery_interval="0s"`, "recovery_interval"},
-		{"status min_idle zero", `min_idle="60s"`, `min_idle="0s"`, "min_idle"},
+[redis]`, "rag.consumer.poison_threshold"},
+		{"status entry_timeout zero", `entry_timeout="5s"`, `entry_timeout="0s"`, "go.status_consumer.entry_timeout"},
+		{"status recovery_interval zero", `recovery_interval="30s"`, `recovery_interval="0s"`, "go.status_consumer.recovery_interval"},
+		{"status min_idle zero", `min_idle="60s"`, `min_idle="0s"`, "go.status_consumer.min_idle"},
 		{"status poison_threshold zero", `recovery_interval="30s"
 poison_threshold=3`, `recovery_interval="30s"
-poison_threshold=0`, "poison_threshold"},
+poison_threshold=0`, "go.status_consumer.poison_threshold"},
 		{"max_attempts zero", `max_attempts=3`, `max_attempts=0`, "max_attempts"},
 		{"no allowed extensions", `allowed_extensions=[".pdf", ".txt", ".md"]`, `allowed_extensions=[]`, "allowed_extensions"},
+		{"extension with second dot", `allowed_extensions=[".pdf", ".txt", ".md"]`, `allowed_extensions=[".tar.gz"]`, "allowed_extensions"},
+		{"extension with space", `allowed_extensions=[".pdf", ".txt", ".md"]`, `allowed_extensions=[".p df"]`, "allowed_extensions"},
+		{"stale rag_grpc section", `[rag_grpc]
+port=50051`, `[server]
+port=50051`, "rag_grpc.port"},
+		{"stale embedding_model key", `embedding_model="qwen3-embedding"`, `model="qwen3-embedding"`, "rag.embedding_model"},
+		{"zero call_timeout", `call_timeout="60s"`, `call_timeout="0s"`, "rag.call_timeout"},
 		{"extension without dot", `allowed_extensions=[".pdf", ".txt", ".md"]`, `allowed_extensions=["pdf"]`, "allowed_extensions"},
 		{"missing status_stream", `status_stream="ingest.status"`, ``, "status_stream"},
 		{"missing status group", `status_consumer_group="center-status"`, ``, "status_consumer_group"},
@@ -185,5 +192,35 @@ func TestValidateBoundary(t *testing.T) {
 	body = strings.Replace(validTOML, `consumer_cleanup_idle="1h"`, `consumer_cleanup_idle="15m1s"`, 1)
 	if _, err := Load(writeConfig(t, body)); err != nil {
 		t.Fatalf("cleanup_idle just above job_timeout must be valid: %v", err)
+	}
+}
+
+// A file written before [rag.consumer] existed leaves every timing at zero.
+func TestLoadRejectsMissingConsumerSection(t *testing.T) {
+	start := strings.Index(validTOML, "[rag.consumer]")
+	end := strings.Index(validTOML, "[redis]")
+	body := validTOML[:start] + validTOML[end:]
+	_, err := Load(writeConfig(t, body))
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	for _, key := range []string{"rag.consumer.job_timeout", "rag.consumer.min_idle", "rag.consumer.poison_threshold"} {
+		if !strings.Contains(err.Error(), key) {
+			t.Errorf("error %q does not mention %s", err, key)
+		}
+	}
+}
+
+func TestLoadReportsAllProblemsTogether(t *testing.T) {
+	body := strings.Replace(validTOML, `max_attempts=3`, `max_attempts=0`, 1)
+	body = strings.Replace(body, `entry_timeout="5s"`, `entry_timeout="0s"`, 1)
+	_, err := Load(writeConfig(t, body))
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	for _, key := range []string{"ingestion.max_attempts", "go.status_consumer.entry_timeout"} {
+		if !strings.Contains(err.Error(), key) {
+			t.Errorf("error %q does not mention %s", err, key)
+		}
 	}
 }

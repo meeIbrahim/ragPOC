@@ -52,6 +52,8 @@ func (c *Client) EnsureBuckets(ctx context.Context) error {
 		}
 		if err := c.inner.MakeBucket(ctx, bucket, miniogo.MakeBucketOptions{}); err != nil {
 			// Another migrate run may have created it between the check and the create.
+			// MinIO reports BucketAlreadyExists for the same case; on AWS S3 it would mean a
+			// foreign owner, which is not possible against our own MinIO.
 			switch miniogo.ToErrorResponse(err).Code {
 			case "BucketAlreadyOwnedByYou", "BucketAlreadyExists":
 				continue

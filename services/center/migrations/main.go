@@ -71,7 +71,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), bucketTimeout)
 	defer cancel()
 	if err := minioClient.EnsureBuckets(ctx); err != nil {
-		log.Fatalf("buckets: %v", err)
+		log.Fatalf("sql migrations applied but bucket setup failed (safe to re-run): %v", err)
 	}
 	log.Printf("buckets ready: %s, %s", cfg.Minio.UploadBucket, cfg.Minio.IngestionBucket)
 }
