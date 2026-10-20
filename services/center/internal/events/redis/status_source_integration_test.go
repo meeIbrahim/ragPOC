@@ -340,3 +340,78 @@ func TestWorkerKeepsWorkingAfterTheGroupIsDeleted(t *testing.T) {
 type handlerFunc func(ctx context.Context, e events.StreamEntry) bool
 
 func (h handlerFunc) Handle(ctx context.Context, e events.StreamEntry) bool { return h(ctx, e) }
+
+type healthyHandler struct{ handlerFunc }
+
+func (healthyHandler) Healthy(context.Context) error { return nil } // the store is fine; only an entry is bad
+
+// One entry that can never be finished must not take the good entries delivered with it down:
+// XREADGROUP and XAUTOCLAIM both bump or deliver a whole batch together, so the neighbours
+// share the bad entry's delivery count and would be poison-dropped along with it.
+func runWithBadHead(t *testing.T, preDeliver bool) {
+	src, client, _ := newSource(t)
+	ctx := context.Background()
+
+	var mu sync.Mutex
+	handled := map[string]int{}
+	handler := healthyHandler{handlerFunc(func(_ context.Context, e events.StreamEntry) bool {
+		payload := e.Values["payload"].(string)
+		if payload == "bad" {
+			return false
+		}
+		mu.Lock()
+		handled[payload]++
+		mu.Unlock()
+		return true
+	})}
+
+	add(t, client, "bad") // the head of the batch
+	for _, p := range []string{"g1", "g2", "g3", "g4"} {
+		add(t, client, p)
+	}
+	if err := src.EnsureGroup(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if preDeliver { // a dead consumer holds the whole batch: the worker only sees it through claims
+		if got, err := src.ReadNew(ctx, "dead", 100*time.Millisecond, 10); err != nil || len(got) != 5 {
+			t.Fatalf("setup: dead consumer read %d entries, err %v", len(got), err)
+		}
+	}
+
+	worker := status.NewWorker("host/status/it", status.WorkerConfig{
+		MinIdle: 150 * time.Millisecond, RecoveryInterval: 200 * time.Millisecond, PoisonThreshold: 3,
+		CleanupIdle: time.Hour, ReadBlock: 100 * time.Millisecond, BatchSize: 10, RetryDelay: 20 * time.Millisecond,
+	}, src, handler, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	wctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() { worker.Run(wctx); close(done) }()
+	t.Cleanup(func() { cancel(); <-done })
+
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		pending, err := client.rdb.XPending(ctx, client.StatusStream, client.StatusGroup).Result()
+		mu.Lock()
+		all := len(handled) == 4
+		mu.Unlock()
+		// done once the good entries ran and the bad one was finally dropped as poison
+		if err == nil && all && pending.Count == 0 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, p := range []string{"g1", "g2", "g3", "g4"} {
+		if handled[p] != 1 {
+			t.Errorf("good entry %s handled %d times, want exactly once (handled=%v)", p, handled[p], handled)
+		}
+	}
+	if pending, _ := client.rdb.XPending(ctx, client.StatusStream, client.StatusGroup).Result(); pending == nil || pending.Count != 0 {
+		t.Errorf("pending = %+v, want the bad entry dropped as poison and nothing left", pending)
+	}
+}
+
+func TestBadEntryDoesNotTakeItsFreshBatchDown(t *testing.T) { runWithBadHead(t, false) }
+
+func TestBadEntryDoesNotTakeItsClaimedBatchDown(t *testing.T) { runWithBadHead(t, true) }

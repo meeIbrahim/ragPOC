@@ -22,8 +22,13 @@ const (
 	maxRecoveryRounds = 10
 )
 
-// errHandlerFailed is returned by readOnce when the handler could not finish an entry.
-var errHandlerFailed = errors.New("handler could not finish the entry")
+// errEntriesFailed is returned by readOnce when at least one entry of the batch could not be
+// finished although the store was healthy. Run backs off before reading again, so a bug in the
+// handler cannot make the worker drain the stream at full speed.
+var errEntriesFailed = errors.New("some entries could not be finished")
+
+// maxLoggedPoison caps the payload of a dropped entry in the log. Producers control it.
+const maxLoggedPoison = 4096
 
 // healthChecker is implemented by handlers that can tell whether the store takes writes.
 type healthChecker interface {
@@ -125,8 +130,9 @@ func (w *Worker) Run(ctx context.Context) {
 			if !w.recreateGroup(ctx) {
 				return
 			}
-		case errors.Is(err, errHandlerFailed):
-			w.waitUntilHealthy(ctx)
+		case errors.Is(err, errEntriesFailed):
+			w.logger.Warn("entries could not be finished and stay pending; backing off")
+			w.sleep(ctx, w.cfg.RetryDelay)
 		default:
 			w.logger.Error("reading the status stream failed; backing off", "err", err)
 			w.sleep(ctx, w.cfg.RetryDelay)
@@ -182,9 +188,12 @@ func (w *Worker) waitUntilHealthy(ctx context.Context) {
 	}
 }
 
-// readOnce reads one batch of new entries and processes them in order. It stops at the first
-// entry the handler could not finish and reports errHandlerFailed: the entries after it stay
-// unread rather than being delivered once and left pending.
+// readOnce reads one batch of new entries and processes them in order.
+//
+// XREADGROUP puts the whole batch into this consumer's pending list at once, so abandoning the
+// rest of a batch would not leave it unread: the neighbours would come back later, together
+// with the failing entry, and be poison-dropped with it. An entry that cannot be finished
+// therefore stays pending alone and its neighbours are still handled.
 func (w *Worker) readOnce(ctx context.Context) error {
 	// go-redis turns a block under 1ms into BLOCK 0, which waits forever.
 	block := max(min(w.cfg.ReadBlock, w.cfg.RecoveryInterval), time.Millisecond)
@@ -192,13 +201,17 @@ func (w *Worker) readOnce(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	failed := 0
 	for _, e := range entries {
 		if ctx.Err() != nil {
 			return nil // shutting down: what is left stays pending and is reclaimed later
 		}
 		if !w.process(ctx, e) {
-			return errHandlerFailed
+			failed++
 		}
+	}
+	if failed > 0 {
+		return errEntriesFailed
 	}
 	return nil
 }
@@ -260,13 +273,11 @@ func (w *Worker) claimAndProcess(ctx context.Context) error {
 				// The center cannot publish a FAILED event for itself; the document stays
 				// PROCESSING until the reconciliation sweep (backlog B2) repairs it.
 				w.logger.Error("dropping poison status entry", "entry", e.ID, "deliveries", deliveries,
-					"threshold", w.cfg.PoisonThreshold, "values", e.Values)
+					"threshold", w.cfg.PoisonThreshold, "values", clipValues(e.Values))
 				w.ack(ctx, e.ID)
 				continue
 			}
-			if !w.process(ctx, e) {
-				return nil // the store is failing: stop claiming, the entries stay pending
-			}
+			w.process(ctx, e) // a failing entry stays pending alone; its neighbours still run
 		}
 		if int64(len(entries)) < w.cfg.BatchSize {
 			return nil
@@ -277,12 +288,29 @@ func (w *Worker) claimAndProcess(ctx context.Context) error {
 
 // process hands the entry to the handler and acknowledges it when it is finished. It reports
 // whether the entry was finished.
+//
+// When the handler fails, the store's health decides what happens next. If the store cannot
+// take writes it is the cause: wait until it can and try the same entry again in place (it was
+// already delivered, so abandoning it would only start its poison clock). If the store is fine
+// the entry itself is the problem: leave it pending and let the caller move on.
 func (w *Worker) process(ctx context.Context, e events.StreamEntry) bool {
-	if !w.handler.Handle(ctx, e) {
-		return false
+	for {
+		if w.handler.Handle(ctx, e) {
+			w.ack(ctx, e.ID)
+			return true
+		}
+		if ctx.Err() != nil {
+			return false
+		}
+		checker, ok := w.handler.(healthChecker)
+		if !ok || checker.Healthy(ctx) == nil {
+			return false
+		}
+		w.waitUntilHealthy(ctx)
+		if ctx.Err() != nil {
+			return false
+		}
 	}
-	w.ack(ctx, e.ID)
-	return true
 }
 
 // ack runs on a context that survives shutdown: the entry is already handled, and leaving it
@@ -305,4 +333,15 @@ func (w *Worker) sleep(ctx context.Context, d time.Duration) bool {
 	case <-t.C:
 		return true
 	}
+}
+
+func clipValues(values map[string]any) map[string]any {
+	clipped := make(map[string]any, len(values))
+	for k, v := range values {
+		if text, ok := v.(string); ok && len(text) > maxLoggedPoison {
+			v = text[:maxLoggedPoison] + "..."
+		}
+		clipped[k] = v
+	}
+	return clipped
 }

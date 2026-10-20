@@ -167,11 +167,11 @@ func TestReadOnceAcksOnlyAfterHandlingAndOnlyWhenHandled(t *testing.T) {
 	}
 	w := newWorker(src, recordingHandler(src, func(id string) bool { return id != "2-0" }), testConfig())
 
-	// 2-0 cannot be finished: 1-0 is acked, and 3-0 is left for later instead of being read on.
-	if err := w.readOnce(context.Background()); !errors.Is(err, errHandlerFailed) {
-		t.Fatalf("err = %v, want errHandlerFailed", err)
+	// 2-0 cannot be finished and stays pending; its neighbours are still handled.
+	if err := w.readOnce(context.Background()); !errors.Is(err, errEntriesFailed) {
+		t.Fatalf("err = %v, want errEntriesFailed", err)
 	}
-	want := "read,handle:1-0,ack:1-0,handle:2-0"
+	want := "read,handle:1-0,ack:1-0,handle:2-0,handle:3-0,ack:3-0"
 	if got := strings.Join(src.events(), ","); got != want {
 		t.Fatalf("calls = %s\nwant    %s", got, want)
 	}
@@ -535,21 +535,74 @@ func TestRunRecreatesAGroupThatDisappearedDuringRecovery(t *testing.T) {
 	}
 }
 
-// When the store cannot take a write, stop the batch: the rest of it stays unread instead of
-// being delivered once and then riding the poison clock.
-func TestReadOnceStopsTheBatchWhenTheHandlerFails(t *testing.T) {
+// XREADGROUP delivers the whole batch into the pending list at once, so abandoning the rest of
+// a batch does not leave it "unread": the neighbours would come back with the failing entry and
+// be poison-dropped with it. A failing entry must not hold its neighbours back.
+func TestReadOnceHandlesTheNeighboursOfAFailingEntry(t *testing.T) {
 	src := &fakeSource{}
 	src.readFn = func(context.Context, string, time.Duration, int64) ([]events.StreamEntry, error) {
-		return []events.StreamEntry{entry("1-0"), entry("2-0"), entry("3-0")}, nil
+		return []events.StreamEntry{entry("1-0"), entry("2-0"), entry("3-0"), entry("4-0")}, nil
 	}
-	w := newWorker(src, recordingHandler(src, func(string) bool { return false }), testConfig())
+	h := healthHandler{
+		handlerFunc: func(_ context.Context, e events.StreamEntry) bool {
+			src.record("handle:%s", e.ID)
+			return e.ID != "1-0" // the head entry is bad
+		},
+		healthy: func(context.Context) error { return nil }, // the store is fine: the entry is the problem
+	}
+	w := newWorker(src, h, testConfig())
 
 	err := w.readOnce(context.Background())
-	if !errors.Is(err, errHandlerFailed) {
-		t.Fatalf("err = %v, want errHandlerFailed", err)
+	if !errors.Is(err, errEntriesFailed) {
+		t.Fatalf("err = %v, want errEntriesFailed so Run backs off", err)
 	}
-	if src.count("handle:") != 1 || src.count("ack:") != 0 {
-		t.Fatalf("calls = %v, want one handle and no ack", src.events())
+	for _, id := range []string{"2-0", "3-0", "4-0"} {
+		if src.count("ack:"+id) != 1 {
+			t.Errorf("neighbour %s was not handled and acked: %v", id, src.events())
+		}
+	}
+	if src.count("ack:1-0") != 0 {
+		t.Error("the failing entry was acked")
+	}
+	if src.count("handle:1-0") != 1 {
+		t.Errorf("the failing entry was retried in place although the store is healthy: %v", src.events())
+	}
+}
+
+// When the store is the cause, the same entry is retried in place after it recovers: it was
+// already delivered, so it must not be abandoned to the poison clock.
+func TestFailedEntryIsRetriedInPlaceOnceTheStoreRecovers(t *testing.T) {
+	src := &fakeSource{}
+	src.readFn = func(context.Context, string, time.Duration, int64) ([]events.StreamEntry, error) {
+		return []events.StreamEntry{entry("1-0"), entry("2-0")}, nil
+	}
+	attempts := 0
+	probes := 0
+	h := healthHandler{
+		handlerFunc: func(_ context.Context, e events.StreamEntry) bool {
+			src.record("handle:%s", e.ID)
+			if e.ID == "1-0" {
+				attempts++
+				return attempts > 1 // fails once, while the store is down
+			}
+			return true
+		},
+		healthy: func(context.Context) error {
+			probes++
+			if probes <= 3 {
+				return errors.New("database is locked")
+			}
+			return nil
+		},
+	}
+	w := newWorker(src, h, testConfig())
+
+	if err := w.readOnce(context.Background()); err != nil {
+		t.Fatalf("err = %v, want nil: the entry finished after the store recovered", err)
+	}
+	want := "read,handle:1-0,handle:1-0,ack:1-0,handle:2-0,ack:2-0"
+	if got := strings.Join(src.events(), ","); got != want {
+		t.Fatalf("calls = %s\nwant    %s", got, want)
 	}
 }
 
@@ -568,8 +621,9 @@ func TestRunDoesNotReadWhileTheStoreIsUnhealthy(t *testing.T) {
 		return nil, nil
 	}
 	var probes int
+	handles := 0
 	h := healthHandler{
-		handlerFunc: func(context.Context, events.StreamEntry) bool { return false },
+		handlerFunc: func(context.Context, events.StreamEntry) bool { handles++; return false },
 		healthy: func(context.Context) error {
 			probes++
 			if probes < 4 {
@@ -589,6 +643,9 @@ func TestRunDoesNotReadWhileTheStoreIsUnhealthy(t *testing.T) {
 	}
 	if reads != 2 {
 		t.Fatalf("%d reads: one failed batch plus one after recovery expected", reads)
+	}
+	if handles != 2 {
+		t.Fatalf("entry handled %d times, want 2: once, then retried in place after the store recovered", handles)
 	}
 }
 
@@ -708,7 +765,88 @@ func TestRunBacksOffAfterAReadError(t *testing.T) {
 	go func() { w.Run(ctx); close(done) }()
 	waitFor(t, done)
 
-	if len(times) < 2 || times[1].Sub(times[0]) < 70*time.Millisecond {
-		t.Fatalf("second read came %v after the failed one, want the retry delay", times[1].Sub(times[0]))
+	if len(times) < 2 {
+		t.Fatalf("only %d reads happened", len(times))
+	}
+	if gap := times[1].Sub(times[0]); gap < 70*time.Millisecond {
+		t.Fatalf("second read came %v after the failed one, want the retry delay", gap)
+	}
+}
+
+// The same holds for claimed entries: XAUTOCLAIM bumps the delivery count of the whole batch,
+// so a failing head entry must not stop its neighbours from being handled before the poison
+// threshold reaches all of them together.
+func TestRecoverOnceHandlesTheNeighboursOfAFailingClaimedEntry(t *testing.T) {
+	src := &fakeSource{}
+	src.claimFn = func(context.Context, string, time.Duration, int64) ([]events.StreamEntry, error) {
+		return []events.StreamEntry{entry("1-0"), entry("2-0"), entry("3-0")}, nil
+	}
+	h := healthHandler{
+		handlerFunc: func(_ context.Context, e events.StreamEntry) bool {
+			src.record("handle:%s", e.ID)
+			return e.ID != "1-0"
+		},
+		healthy: func(context.Context) error { return nil },
+	}
+	w := newWorker(src, h, testConfig())
+
+	if err := w.recoverOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if src.count("ack:2-0") != 1 || src.count("ack:3-0") != 1 || src.count("ack:1-0") != 0 {
+		t.Fatalf("calls = %v, want 2-0 and 3-0 acked and 1-0 left pending", src.events())
+	}
+}
+
+// Failures while the store is healthy must not let a bug drain the stream at full speed.
+func TestRunBacksOffWhenEntriesFailWhileTheStoreIsHealthy(t *testing.T) {
+	src := &fakeSource{}
+	cfg := testConfig()
+	cfg.RetryDelay = 80 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	var times []time.Time
+	src.readFn = func(context.Context, string, time.Duration, int64) ([]events.StreamEntry, error) {
+		times = append(times, time.Now())
+		if len(times) == 1 {
+			return []events.StreamEntry{entry("1-0")}, nil
+		}
+		cancel()
+		return nil, nil
+	}
+	h := healthHandler{
+		handlerFunc: func(context.Context, events.StreamEntry) bool { return false },
+		healthy:     func(context.Context) error { return nil },
+	}
+	w := newWorker(src, h, cfg)
+
+	done := make(chan struct{})
+	go func() { w.Run(ctx); close(done) }()
+	waitFor(t, done)
+
+	if len(times) < 2 {
+		t.Fatalf("only %d reads", len(times))
+	}
+	if gap := times[1].Sub(times[0]); gap < 70*time.Millisecond {
+		t.Fatalf("next read came %v after a batch with a failing entry, want the retry delay", gap)
+	}
+}
+
+func TestPoisonLogClipsAHugePayload(t *testing.T) {
+	src := &fakeSource{}
+	src.claimFn = func(context.Context, string, time.Duration, int64) ([]events.StreamEntry, error) {
+		return []events.StreamEntry{{ID: "9-0", Values: map[string]any{"payload": strings.Repeat("x", 500000)}}}, nil
+	}
+	src.countFn = func(context.Context, string) (int64, error) { return 4, nil }
+	var logs strings.Builder
+	w := NewWorker("host/status/test", testConfig(), src, recordingHandler(src, func(string) bool { return true }),
+		slog.New(slog.NewTextHandler(&logs, nil)))
+
+	_ = w.recoverOnce(context.Background())
+
+	if logs.Len() > 10000 {
+		t.Fatalf("the poison log line is %d bytes; a producer-controlled payload must be clipped", logs.Len())
+	}
+	if !strings.Contains(logs.String(), "9-0") {
+		t.Fatal("the poison log lost the entry id")
 	}
 }

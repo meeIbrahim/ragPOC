@@ -87,6 +87,9 @@ func (s *Store) ApplyFailed(ctx context.Context, hash string, attempts int, retr
 // not enough: another process holding the write lock past busy_timeout, a full disk or a
 // read-only filesystem all leave reads working while every ApplyIndexed/ApplyFailed fails. The
 // statement matches no row, so it changes nothing, but it still needs the write lock.
+//
+// While the lock is held elsewhere Ping waits out busy_timeout (5s) and then fails with
+// SQLITE_BUSY: the driver does not interrupt that wait when ctx ends, so ctx does not bound it.
 func (s *Store) Ping(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, `UPDATE document_store SET updated_at = updated_at WHERE hash = ''`); err != nil {
 		return fmt.Errorf("database write probe: %w", err)

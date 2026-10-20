@@ -105,8 +105,9 @@ func (h *Handler) Handle(ctx context.Context, entry events.StreamEntry) (ack boo
 	return true
 }
 
-// Healthy reports whether the store can take a write. The worker uses it to avoid reading or
-// claiming entries while every apply would fail.
+// Healthy reports whether the store can take a write. The worker uses it to tell a store
+// outage from a bad entry, and to avoid claiming while every apply would fail. A probe against
+// a locked database takes up to the store's busy_timeout; the context does not shorten that.
 func (h *Handler) Healthy(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, h.entryTimeout)
 	defer cancel()
