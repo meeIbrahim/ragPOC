@@ -1,4 +1,4 @@
-.PHONY: grpc-generate run_migrations run_worker test up down go_migrate go_migrate_down
+.PHONY: grpc-generate run_migrations run_worker test e2e up down go_migrate go_migrate_down
 
 # gRPC
 grpc-generate:
@@ -20,6 +20,11 @@ run_worker:
 test:
 	cd services/center && go test -race ./...
 	cd services/rag-service && uv run pytest
+
+# Compose e2e of the whole system in an isolated project (needs Docker, takes a few minutes).
+# `make e2e SCENARIOS="crash hang"` runs only those scenarios.
+e2e:
+	./scripts/e2e.sh $(SCENARIOS)
 
 go_migrate:
 	go build -C services/center -o ../../bin/migrate ./migrations
