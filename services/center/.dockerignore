@@ -1,0 +1,9 @@
+Dockerfile
+.dockerignore
+*.db
+*.db-wal
+*.db-shm
+go_sqlite_db/
+sqlite_db/
+bin/
+*.test
