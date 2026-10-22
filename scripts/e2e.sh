@@ -12,7 +12,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-DC=(docker compose -p ragpoc-e2e -f docker-compose.yml -f docker-compose.e2e.yml)
+DC=(docker compose -p ragpoc-e2e -f docker-compose.yml -f docker-compose.e2e.yml --profile app --profile e2e)
 
 # "<stub mode> <subtest>"; the order is the order they run in.
 SCENARIOS=(
@@ -25,11 +25,11 @@ SCENARIOS=(
   "indexed unsupported_ext"
   "indexed consumer_cleanup"
 )
-# crash and hang must restart the consumer container at least this many times (3 starts die, the
-# 4th reports the poison entry).
-MIN_RESTARTS=3
+# crash and hang must restart the consumer container exactly this many times: 3 starts die, the
+# 4th reports the poison entry and keeps running.
+WANT_RESTARTS=3
 
-cleanup() { "${DC[@]}" --profile e2e down -v --remove-orphans >/dev/null 2>&1 || true; }
+cleanup() { "${DC[@]}" down -v --remove-orphans >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
 wanted() { # is the subtest selected on the command line?
@@ -40,10 +40,39 @@ wanted() { # is the subtest selected on the command line?
   return 1
 }
 
-restarts() { docker inspect -f '{{.RestartCount}}' "$("${DC[@]}" ps -q rag-consumer)"; }
+# A typo must fail loudly: an empty selection would otherwise print "e2e passed" having run nothing.
+for arg in "$@"; do
+  known=0
+  for entry in "${SCENARIOS[@]}"; do
+    [ "${entry#* }" = "$arg" ] && known=1
+  done
+  if [ "$known" -eq 0 ]; then
+    echo "unknown scenario: $arg" >&2
+    echo "known scenarios:$(printf ' %s' "${SCENARIOS[@]#* }")" >&2
+    exit 2
+  fi
+done
+
+restarts() {
+  local id
+  id=$("${DC[@]}" ps -q rag-consumer)
+  [ -n "$id" ] && docker inspect -f '{{.RestartCount}}' "$id"
+}
+
+# Start from nothing: leftovers of an aborted run (old volumes, a consumer in another mode) would
+# make the first scenario lie.
+cleanup
 
 echo "== building and starting the stack (project ragpoc-e2e)"
-"${DC[@]}" up -d --build center rag-consumer
+# One-shot migrations run once here; the per-scenario `run` below uses --no-deps so it does not
+# run them again.
+if ! "${DC[@]}" up -d --build --wait center rag-consumer; then
+  echo "stack failed to start" >&2
+  "${DC[@]}" logs --tail 50 >&2 || true
+  exit 1
+fi
+
+"${DC[@]}" build e2e
 
 results=()
 failed=0
@@ -57,13 +86,13 @@ for entry in "${SCENARIOS[@]}"; do
   start=$(date +%s)
 
   status=PASS
-  if ! "${DC[@]}" run --build --rm e2e -test.run "^TestPhase0\$/^${sub}\$" -test.v -test.timeout 8m; then
+  if ! "${DC[@]}" run --no-deps --rm e2e -test.run "^TestPhase0\$/^${sub}\$" -test.v -test.timeout 8m; then
     status=FAIL
   elif [ "$sub" = crash ] || [ "$sub" = hang ]; then
-    count=$(restarts)
+    count=$(restarts) || count=unknown
     echo "   consumer container restarts: $count"
-    if [ "$count" -lt "$MIN_RESTARTS" ]; then
-      echo "   expected at least $MIN_RESTARTS restarts" >&2
+    if [ "$count" != "$WANT_RESTARTS" ]; then
+      echo "   expected exactly $WANT_RESTARTS restarts" >&2
       status=FAIL
     fi
   fi
@@ -78,6 +107,10 @@ done
 
 echo
 echo "== summary"
+if [ "${#results[@]}" -eq 0 ]; then
+  echo "no scenario ran" >&2
+  exit 1
+fi
 printf '   %s\n' "${results[@]}"
 if [ "$failed" -ne 0 ]; then
   echo "e2e FAILED" >&2

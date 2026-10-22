@@ -1,18 +1,24 @@
-# The whole system for local runs: infrastructure, the Go center service, the Python consumer
-# (stub mode in Phase 0) and, under the `e2e` profile, the e2e test runner.
+# The whole system for local runs.
 #
-#   docker compose up -d --build        the stack, with published ports for poking at it by hand
-#   make e2e                            the compose e2e in an isolated project (see scripts/e2e.sh
-#                                       and docker-compose.e2e.yml)
+#   docker compose up -d                     infrastructure only (MinIO, Qdrant, Redis): the dev loop,
+#                                            where the Go API and the worker run on the host
+#   docker compose --profile app up -d --build
+#                                            the whole system in containers (or `make stack`)
+#   make e2e                                 the compose e2e in an isolated project (see
+#                                            scripts/e2e.sh and docker-compose.e2e.yml)
 #
+# The application services sit under the `app` profile on purpose: a containerized center and
+# consumer next to a host dev loop would share the same Redis groups and take its entries.
 # No container_name is set, so several projects (this one and the e2e one) can run side by side.
+# Published ports are bound to loopback: Redis has no password.
 
 services:
   minio:
-    image: quay.io/minio/minio
+    # Pinned (tag and digest) so the e2e gate is reproducible. Bump deliberately.
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
     environment:
       MINIO_ROOT_USER: minio_user
       MINIO_ROOT_PASSWORD: minio_password
@@ -26,9 +32,9 @@ services:
       retries: 30
 
   qdrant:
-    image: qdrant/qdrant
+    image: qdrant/qdrant:v1.19.0@sha256:057ee3a8da769fe7310dd3537b4dc7583bf87a95ce8ac43c0af5a46bc580d1fc
     ports:
-      - "6333:6333"
+      - "127.0.0.1:6333:6333"
     volumes:
       - ./qdrant_data:/qdrant/storage
     healthcheck:
@@ -39,9 +45,9 @@ services:
       retries: 30
 
   redis:
-    image: redis:7.4
+    image: redis:7.4@sha256:4fa24486b8bcca8eec45ee0eb166edc674795e53a2b53d1a9ef263eecebaac85
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     # An entry larger than this is refused by Redis instead of being read whole into the
     # consumer's memory (the consumer only checks size after the client has read the entry).
     command: ["redis-server", "--proto-max-bulk-len", "16777216"]
@@ -53,6 +59,8 @@ services:
 
   # One-shot: creates the SQLite schema and the two MinIO buckets (Go owns both buckets).
   center-migrate:
+    profiles: ["app"]
+    image: ragpoc-center
     build:
       context: ./services/center
       target: runtime
@@ -68,6 +76,8 @@ services:
 
   # One-shot: creates the indexed_documents table and the Qdrant collection.
   rag-migrate:
+    profiles: ["app"]
+    image: ragpoc-rag
     build:
       context: ./services/rag-service
     command: ["python", "-m", "migration.main"]
@@ -80,11 +90,13 @@ services:
     restart: "no"
 
   center:
+    profiles: ["app"]
+    image: ragpoc-center
     build:
       context: ./services/center
       target: runtime
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     volumes:
       - ./deploy/config.compose.toml:/config/config.toml:ro
       - center_db:/data
@@ -102,6 +114,8 @@ services:
     restart: unless-stopped
 
   rag-consumer:
+    profiles: ["app"]
+    image: ragpoc-rag
     build:
       context: ./services/rag-service
     environment:
@@ -109,6 +123,8 @@ services:
       RAG_STUB_MODE: ${RAG_STUB_MODE:-indexed}
     volumes:
       - ./deploy/config.compose.toml:/config/config.toml:ro
+      # Where rag-migrate creates indexed_documents; the Phase 1 consumer writes it.
+      - rag_db:/data
     # PID 1 must be an init process: the consumer has no SIGTERM handler on purpose (no graceful
     # drain), and a PID 1 without a handler ignores SIGTERM, so `docker stop` would wait for SIGKILL.
     init: true
@@ -123,6 +139,7 @@ services:
   # read-only by the test) and reaches everything else by service name.
   e2e:
     profiles: ["e2e"]
+    image: ragpoc-center-e2e
     build:
       context: ./services/center
       target: e2e

@@ -51,17 +51,20 @@ func testIndexed(t *testing.T) {
 		t.Fatalf("status events = %+v, want one INDEXED with attempts=0", events)
 	}
 
-	// Redelivering any status event is a no-op.
+	// Redelivering any status event is a no-op: not even the row's updated_at moves.
+	stamp := updatedAt(t, s.db, hash)
 	for _, ev := range events {
 		addStatusEntry(t, s.rdb, ev.Payload)
 	}
 	settleStatusGroup(t, s.rdb)
 	assertUnchanged(t, s, hash, docRow{"INDEXED", 0}, 1)
+	assertStamp(t, s, hash, stamp)
 
 	// A FAILED(N) arriving after INDEXED(N) leaves the document INDEXED.
 	addStatusEntry(t, s.rdb, failedPayload(hash, 0, true, "INTERNAL"))
 	settleStatusGroup(t, s.rdb)
 	assertUnchanged(t, s, hash, docRow{"INDEXED", 0}, 1)
+	assertStamp(t, s, hash, stamp)
 }
 
 // stub mode: failed-retryable
@@ -91,12 +94,14 @@ func testFailedRetryable(t *testing.T) {
 		t.Errorf("published ingest attempts = %v, want [0 1 2]", got)
 	}
 
-	// Redelivering the three FAILED events must not queue another attempt.
+	// Redelivering the three FAILED events must not queue another attempt or touch the row.
+	stamp := updatedAt(t, s.db, hash)
 	for _, ev := range events {
 		addStatusEntry(t, s.rdb, ev.Payload)
 	}
 	settleStatusGroup(t, s.rdb)
 	assertUnchanged(t, s, hash, docRow{"FAILED", maxAttempts - 1}, maxAttempts)
+	assertStamp(t, s, hash, stamp)
 }
 
 // stub mode: failed-permanent
@@ -159,7 +164,9 @@ func assertPoisonedAfterRestarts(t *testing.T, label string, timeout time.Durati
 
 	watcher := watchConsumers(s.rdb)
 	id := upload(t, label+".txt", uniqueContent(label))
+	started := time.Now()
 	final := waitFinal(t, id, timeout)
+	elapsed := time.Since(started)
 	names := watcher.finish()
 	if final != "FAILED" {
 		t.Fatalf("final status = %s, want FAILED", final)
@@ -175,9 +182,14 @@ func assertPoisonedAfterRestarts(t *testing.T, label string, timeout time.Durati
 	if ev := events[0]; ev.Status != "FAILED" || ev.Reason != "POISON_MESSAGE" || ev.Attempts != 0 || ev.Retryable == nil || *ev.Retryable {
 		t.Fatalf("event = %+v, want a non-retryable POISON_MESSAGE echoing attempts=0", ev)
 	}
-	// 3 process starts crash, the 4th reports: every start registered its own consumer name.
-	if len(names) < 3 {
-		t.Errorf("saw %d consumer names %v, want a new one per restart (>= 3)", len(names), names)
+	// 3 process starts die, the 4th reports: every start registered its own consumer name.
+	if want := cfg.RAG.Consumer.PoisonThreshold + 1; len(names) != want {
+		t.Errorf("saw %d consumer names %v, want exactly %d (one per process start)", len(names), names, want)
+	}
+	// Each of the three reclaims waits min_idle, so a report much sooner means the poison check
+	// fired early.
+	if floor := time.Duration(cfg.RAG.Consumer.PoisonThreshold) * cfg.RAG.Consumer.MinIdle.Std(); elapsed < floor {
+		t.Errorf("poison reported after %v, want at least %d x min_idle = %v", elapsed, cfg.RAG.Consumer.PoisonThreshold, floor)
 	}
 }
 
@@ -196,25 +208,29 @@ func testUnsupportedExtension(t *testing.T) {
 	}
 }
 
-// The center deletes dead consumers of its status group, but only those with nothing pending:
+// Both services delete dead consumers of the group they read, but only those with nothing pending:
 // deleting one with pending entries would drop them silently.
+//
+// The "pending is kept" half runs against the center's status group only. The Python group cannot
+// show it here: min_idle (10s) is below consumer_cleanup_idle (15s), so a pending entry is
+// reclaimed (and the consumer emptied) before it is old enough to be a cleanup candidate. That
+// half is covered by the Python unit and integration tests.
 func testConsumerCleanup(t *testing.T) {
 	rdb := newRedis(t)
 	ctx := context.Background()
 
-	if err := rdb.XGroupCreateMkStream(ctx, statusStream, statusGroup, "0").Err(); err != nil &&
-		!strings.HasPrefix(err.Error(), "BUSYGROUP") {
-		t.Fatal(err)
+	for stream, group := range map[string]string{statusStream: statusGroup, ingestStream: ingestGroup} {
+		if err := rdb.XGroupCreateMkStream(ctx, stream, group, "0").Err(); err != nil &&
+			!strings.HasPrefix(err.Error(), "BUSYGROUP") {
+			t.Fatal(err)
+		}
 	}
-	const idle, holder = "e2e-idle-empty", "e2e-holder"
+	const idle, pyIdle, holder = "e2e-idle-empty", "e2e-py-idle-empty", "e2e-holder"
 	t.Cleanup(func() {
 		rdb.XGroupDelConsumer(ctx, statusStream, statusGroup, idle)
 		rdb.XGroupDelConsumer(ctx, statusStream, statusGroup, holder)
+		rdb.XGroupDelConsumer(ctx, ingestStream, ingestGroup, pyIdle)
 	})
-
-	if err := rdb.XGroupCreateConsumer(ctx, statusStream, statusGroup, idle).Err(); err != nil {
-		t.Fatal(err)
-	}
 
 	// The holder must be the consumer that reads the entry, not the center's own worker, which
 	// is also blocked on this stream. Redis serves blocked readers oldest first and the worker
@@ -249,28 +265,67 @@ func testConsumerCleanup(t *testing.T) {
 	}
 	t.Cleanup(func() { rdb.XAck(ctx, statusStream, statusGroup, entryID) })
 
-	// consumer_cleanup_idle=5s, recovery_interval=2s: the idle consumer goes within a few seconds.
-	var names map[string]int64
-	if !eventually(30*time.Second, func() bool {
-		consumers, err := rdb.XInfoConsumers(ctx, statusStream, statusGroup).Result()
-		if err != nil {
-			return false
-		}
-		names = map[string]int64{}
-		for _, c := range consumers {
-			names[c.Name] = c.Pending
-		}
-		_, idleStillThere := names[idle]
-		return !idleStillThere
-	}) {
-		t.Fatalf("the idle consumer with nothing pending was not deleted: %v", names)
+	// Created only now, so the clock below starts when the holder is already in place.
+	if err := rdb.XGroupCreateConsumer(ctx, statusStream, statusGroup, idle).Err(); err != nil {
+		t.Fatal(err)
 	}
-	if pending, ok := names[holder]; !ok || pending != 1 {
-		t.Fatalf("the consumer holding a pending entry must survive with pending=1, got %v", names)
+	if err := rdb.XGroupCreateConsumer(ctx, ingestStream, ingestGroup, pyIdle).Err(); err != nil {
+		t.Fatal(err)
+	}
+	created := time.Now()
+	goIdleFor := cfg.Go.StatusConsumer.ConsumerCleanupIdle.Std()
+	pyIdleFor := cfg.RAG.Consumer.ConsumerCleanupIdle.Std()
+
+	// Too early to go: a consumer idle for less than consumer_cleanup_idle must still be there
+	// (a cleanup that ignored the idle time would already have removed it).
+	has := func(stream, group, name string) (present bool, pending int64) {
+		consumers, err := rdb.XInfoConsumers(ctx, stream, group).Result()
+		if err != nil {
+			t.Fatalf("XINFO CONSUMERS %s %s: %v", stream, group, err)
+		}
+		for _, c := range consumers {
+			if c.Name == name {
+				return true, c.Pending
+			}
+		}
+		return false, 0
+	}
+	// Check just before the earliest allowed deletion, after at least one cleanup pass.
+	time.Sleep(time.Until(created.Add(goIdleFor - time.Second)))
+	if ok, _ := has(statusStream, statusGroup, idle); !ok {
+		t.Fatalf("the idle consumer was deleted before consumer_cleanup_idle (%v) had passed", goIdleFor)
+	}
+
+	// Then it must go, and not before the idle time: 2s recovery passes plus the idle time.
+	var goGone, pyGone time.Duration
+	if !eventually(pyIdleFor+30*time.Second, func() bool {
+		if goGone == 0 {
+			if ok, _ := has(statusStream, statusGroup, idle); !ok {
+				goGone = time.Since(created)
+			}
+		}
+		if pyGone == 0 {
+			if ok, _ := has(ingestStream, ingestGroup, pyIdle); !ok {
+				pyGone = time.Since(created)
+			}
+		}
+		return goGone != 0 && pyGone != 0
+	}) {
+		t.Fatalf("idle consumers with nothing pending were not deleted (center after %v, python after %v)", goGone, pyGone)
+	}
+	// Redis idle time is measured from creation, so an earlier deletion means the check ignored it.
+	if goGone < goIdleFor-500*time.Millisecond {
+		t.Errorf("center deleted the idle consumer after %v, before consumer_cleanup_idle %v", goGone, goIdleFor)
+	}
+	if pyGone < pyIdleFor-500*time.Millisecond {
+		t.Errorf("python deleted the idle consumer after %v, before consumer_cleanup_idle %v", pyGone, pyIdleFor)
+	}
+	if ok, pending := has(statusStream, statusGroup, holder); !ok || pending != 1 {
+		t.Fatalf("the consumer holding a pending entry must survive with pending=1 (present=%v pending=%d)", ok, pending)
 	}
 
 	// Several cleanup passes later it is still there.
-	time.Sleep(6 * time.Second)
+	time.Sleep(3 * cfg.Go.StatusConsumer.RecoveryInterval.Std())
 	consumers, err := rdb.XInfoConsumers(ctx, statusStream, statusGroup).Result()
 	if err != nil {
 		t.Fatal(err)
@@ -281,6 +336,13 @@ func testConsumerCleanup(t *testing.T) {
 		}
 	}
 	t.Fatalf("the consumer with a pending entry was deleted after all: %+v", consumers)
+}
+
+func assertStamp(t *testing.T, s *scenario, hash, want string) {
+	t.Helper()
+	if got := updatedAt(t, s.db, hash); got != want {
+		t.Fatalf("updated_at moved from %s to %s: the redelivered event modified the row", want, got)
+	}
 }
 
 // assertUnchanged checks the document row and the number of outbox rows, and that they stay put:

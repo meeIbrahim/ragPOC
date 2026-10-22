@@ -22,19 +22,33 @@ import (
 	"testing"
 	"time"
 
+	"center-service/internal/config"
+
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	_ "modernc.org/sqlite"
 )
 
-const (
-	ingestStream = "ingest.docs"
-	statusStream = "ingest.status"
-	ingestGroup  = "rag-pdf-fixed"
-	statusGroup  = "center-status"
+// cfg is the same file every service in the stack reads (deploy/config.e2e.toml, mounted at
+// /config/config.toml), so the streams, groups and timings asserted on cannot drift from it.
+var cfg = mustLoadConfig()
 
-	maxAttempts = 3 // [ingestion].max_attempts in deploy/config.e2e.toml
+var (
+	ingestStream = cfg.Redis.Stream
+	statusStream = cfg.Redis.StatusStream
+	ingestGroup  = cfg.Redis.ConsumerGroup
+	statusGroup  = cfg.Redis.StatusConsumerGroup
+
+	maxAttempts = cfg.Ingestion.MaxAttempts
 )
+
+func mustLoadConfig() *config.Config {
+	c, err := config.Load(getenv("CONFIG", "/config/config.toml"))
+	if err != nil {
+		panic(err)
+	}
+	return c
+}
 
 var httpClient = &http.Client{Timeout: 15 * time.Second}
 
@@ -192,6 +206,18 @@ func mustDoc(t *testing.T, db *sql.DB, hash string) docRow {
 		t.Fatalf("document %s: %v", hash, err)
 	}
 	return d
+}
+
+// updatedAt is the row's last-write stamp. It moves on every UPDATE, so comparing it before and
+// after a redelivery proves the center did not touch the row, even when the visible columns
+// would have ended up the same.
+func updatedAt(t *testing.T, db *sql.DB, hash string) string {
+	t.Helper()
+	var ts string
+	if err := db.QueryRow(`SELECT updated_at FROM document_store WHERE hash = ?`, hash).Scan(&ts); err != nil {
+		t.Fatalf("document %s updated_at: %v", hash, err)
+	}
+	return ts
 }
 
 func outboxCount(t *testing.T, db *sql.DB, hash string) int {

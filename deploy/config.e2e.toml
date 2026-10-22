@@ -26,8 +26,9 @@ llm_model="openai/gpt-oss-120b"
 top_k=5
 chunk_size=0
 chunk_overlap=0
-# Small, so a publish retry still fits inside min_idle (one attempt may cost up to
-# connect + read timeout; min_idle below is only 10s).
+# One publish attempt may cost up to connect + read timeout (5s + max(5s, 7s) = 12s), which is
+# more than min_idle (10s) below, so no publish retry ever fits in e2e: a failed publish is
+# left to redelivery. Accepted; the retry path is covered by the Python unit tests.
 call_timeout="5s"
 
 [rag.consumer]

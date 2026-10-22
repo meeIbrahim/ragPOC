@@ -1,4 +1,4 @@
-.PHONY: grpc-generate run_migrations run_worker test e2e up down go_migrate go_migrate_down
+.PHONY: grpc-generate run_migrations run_worker test e2e up stack down go_migrate go_migrate_down
 
 # gRPC
 grpc-generate:
@@ -34,8 +34,13 @@ go_migrate_down:
 	go build -C services/center -o ../../bin/migrate ./migrations
 	./bin/migrate -config=config.toml -down
 
+# Infrastructure only (MinIO, Qdrant, Redis): the host dev loop runs the API and the worker itself.
 up:
 	docker compose up -d
 
+# The whole system in containers.
+stack:
+	docker compose --profile app up -d --build
+
 down:
-	docker compose down
+	docker compose --profile app down
