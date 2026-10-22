@@ -306,3 +306,49 @@ func TestPort65535IsValid(t *testing.T) {
 		t.Fatalf("port 65535 must be valid: %v", err)
 	}
 }
+
+// The compose and e2e files are separate full copies (decision D6), so each must load on its
+// own, hold only keys the services model, and keep the timings the e2e depends on.
+func TestDeployConfigsLoad(t *testing.T) {
+	for _, name := range []string{"config.compose.toml", "config.e2e.toml"} {
+		t.Run(name, func(t *testing.T) {
+			cfg, err := Load(filepath.Join("..", "..", "..", "..", "deploy", name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(cfg.UnknownKeys) != 0 {
+				t.Fatalf("unknown keys: %v", cfg.UnknownKeys)
+			}
+			// Inside the compose network every dependency is reached by service name.
+			if cfg.Minio.URL != "minio:9000" || cfg.Redis.Host != "redis" || cfg.Qdrant.URL != "http://qdrant:6333" {
+				t.Errorf("hostnames = %s / %s / %s", cfg.Minio.URL, cfg.Redis.Host, cfg.Qdrant.URL)
+			}
+			if cfg.Ingestion.MaxAttempts != 3 {
+				t.Errorf("max_attempts = %d, the PRD acceptance checks assume 3", cfg.Ingestion.MaxAttempts)
+			}
+		})
+	}
+}
+
+func TestE2EConfigUsesShortTimings(t *testing.T) {
+	cfg, err := Load(filepath.Join("..", "..", "..", "..", "deploy", "config.e2e.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := cfg.RAG.Consumer
+	if c.JobTimeout.Std() != 5*time.Second || c.WatchdogGrace.Std() != 2*time.Second ||
+		c.MinIdle.Std() != 10*time.Second || c.RecoveryInterval.Std() != 2*time.Second ||
+		c.ConsumerCleanupIdle.Std() != 15*time.Second {
+		t.Errorf("python consumer timings = %+v", c)
+	}
+	// Go's min_idle stays long so an injected pending entry is not reclaimed during the test, and
+	// its cleanup is short so the cleanup check does not take a minute.
+	s := cfg.Go.StatusConsumer
+	if s.MinIdle.Std() != 60*time.Second || s.RecoveryInterval.Std() != 2*time.Second || s.ConsumerCleanupIdle.Std() != 5*time.Second {
+		t.Errorf("go status consumer timings = %+v", s)
+	}
+	// The consumer's publish budget needs a call_timeout that fits inside min_idle.
+	if cfg.RAG.CallTimeout.Std() != 5*time.Second {
+		t.Errorf("call_timeout = %v", cfg.RAG.CallTimeout.Std())
+	}
+}

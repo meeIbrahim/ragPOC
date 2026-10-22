@@ -126,3 +126,23 @@ def test_deploy_configs_are_loaded_once_they_exist():
         pytest.skip("no deploy/*.toml yet (plan task 31 adds config.compose.toml and config.e2e.toml)")
     for path in deploy:
         load(path)
+
+
+# ---- the deploy configs (plan task 31)
+
+@pytest.mark.parametrize("name", ["config.compose.toml", "config.e2e.toml"])
+def test_each_deploy_config_loads_with_no_unknown_keys(name):
+    cfg = load(REPO_ROOT / "deploy" / name)
+    assert cfg.unknown_keys == ()
+    assert (cfg.minio.url, cfg.redis.host, cfg.qdrant.url) == ("minio:9000", "redis", "http://qdrant:6333")
+    assert cfg.ingestion.max_attempts == 3
+
+
+def test_the_e2e_config_has_the_short_timings_the_e2e_depends_on():
+    from datetime import timedelta
+
+    consumer = load(REPO_ROOT / "deploy" / "config.e2e.toml").rag.consumer
+    assert (consumer.job_timeout, consumer.watchdog_grace, consumer.min_idle) == (
+        timedelta(seconds=5), timedelta(seconds=2), timedelta(seconds=10))
+    assert (consumer.recovery_interval, consumer.consumer_cleanup_idle) == (timedelta(seconds=2), timedelta(seconds=15))
+    assert load(REPO_ROOT / "deploy" / "config.e2e.toml").rag.call_timeout == timedelta(seconds=5)
