@@ -12,6 +12,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Per-run image tags: another checkout building the dev images must not change what this run tests.
+export IMAGE_TAG=e2e
 DC=(docker compose -p ragpoc-e2e -f docker-compose.yml -f docker-compose.e2e.yml --profile app --profile e2e)
 
 # "<stub mode> <subtest>"; the order is the order they run in.
@@ -30,7 +32,6 @@ SCENARIOS=(
 WANT_RESTARTS=3
 
 cleanup() { "${DC[@]}" down -v --remove-orphans >/dev/null 2>&1 || true; }
-trap cleanup EXIT
 
 wanted() { # is the subtest selected on the command line?
   [ "$#" -eq 1 ] && return 0
@@ -58,6 +59,9 @@ restarts() {
   id=$("${DC[@]}" ps -q rag-consumer)
   [ -n "$id" ] && docker inspect -f '{{.RestartCount}}' "$id"
 }
+
+# Only now: a typo above must not tear down a concurrent e2e run.
+trap cleanup EXIT
 
 # Start from nothing: leftovers of an aborted run (old volumes, a consumer in another mode) would
 # make the first scenario lie.

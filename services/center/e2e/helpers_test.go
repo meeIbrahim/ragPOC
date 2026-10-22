@@ -45,7 +45,7 @@ var (
 func mustLoadConfig() *config.Config {
 	c, err := config.Load(getenv("CONFIG", "/config/config.toml"))
 	if err != nil {
-		panic(err)
+		panic(fmt.Sprintf("e2e: %v (set CONFIG, default /config/config.toml; the e2e runs inside compose, see scripts/e2e.sh)", err))
 	}
 	return c
 }

@@ -60,7 +60,7 @@ services:
   # One-shot: creates the SQLite schema and the two MinIO buckets (Go owns both buckets).
   center-migrate:
     profiles: ["app"]
-    image: ragpoc-center
+    image: ragpoc-center:${IMAGE_TAG:-dev}
     build:
       context: ./services/center
       target: runtime
@@ -77,7 +77,7 @@ services:
   # One-shot: creates the indexed_documents table and the Qdrant collection.
   rag-migrate:
     profiles: ["app"]
-    image: ragpoc-rag
+    image: ragpoc-rag:${IMAGE_TAG:-dev}
     build:
       context: ./services/rag-service
     command: ["python", "-m", "migration.main"]
@@ -91,7 +91,7 @@ services:
 
   center:
     profiles: ["app"]
-    image: ragpoc-center
+    image: ragpoc-center:${IMAGE_TAG:-dev}
     build:
       context: ./services/center
       target: runtime
@@ -115,7 +115,7 @@ services:
 
   rag-consumer:
     profiles: ["app"]
-    image: ragpoc-rag
+    image: ragpoc-rag:${IMAGE_TAG:-dev}
     build:
       context: ./services/rag-service
     environment:
@@ -139,7 +139,7 @@ services:
   # read-only by the test) and reaches everything else by service name.
   e2e:
     profiles: ["e2e"]
-    image: ragpoc-center-e2e
+    image: ragpoc-center-e2e:${IMAGE_TAG:-dev}
     build:
       context: ./services/center
       target: e2e
