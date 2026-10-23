@@ -19,6 +19,9 @@ from rag.ports import DependencyUnavailable
 logger = logging.getLogger(__name__)
 
 _SERVICE = "groq"
+# gpt-oss sometimes cites as 【1】 even when the prompt asks for [1]. Mapping single characters
+# works when a bracket and its number arrive in different deltas.
+_CITATION_BRACKETS = str.maketrans({"【": "[", "】": "]"})
 
 
 class GroqLLM:
@@ -42,7 +45,7 @@ class GroqLLM:
                     continue
                 content = chunk.choices[0].delta.content
                 if content:
-                    yield content
+                    yield content.translate(_CITATION_BRACKETS)
         except (APIError, httpx.HTTPError, OSError) as exc:
             # APIError covers connection, timeout and status errors (429, 401, 5xx).
             logger.warning("Groq call failed: %s", type(exc).__name__)

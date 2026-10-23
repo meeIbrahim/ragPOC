@@ -127,3 +127,9 @@ def test_a_short_real_answer_has_no_reasoning_text():
     answer = "".join(real.stream("Reply with exactly the word: pong", "ping"))
     assert "pong" in answer.lower()
     assert len(answer) < 200
+
+
+def test_full_width_citation_brackets_become_ascii_even_across_deltas():
+    # gpt-oss sometimes cites as 【1】 despite the prompt; the brackets often arrive as separate deltas.
+    stream = FakeStream([chunk("Govern 【"), chunk("1"), chunk("】【5】.")])
+    assert "".join(llm(FakeGroq(stream)).stream("s", "u")) == "Govern [1][5]."
