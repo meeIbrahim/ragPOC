@@ -105,6 +105,31 @@ def test_parses_all_sections(tmp_path):
     assert cfg.ingestion.allowed_extensions == (".pdf", ".txt", ".md")
 
 
+def test_parses_the_phase1_keys(tmp_path):
+    cfg = load(write(tmp_path, VALID_TOML))
+    assert cfg.ollama.url == "http://localhost:11434"
+    assert (cfg.rag.chunk_size, cfg.rag.chunk_overlap, cfg.rag.top_k) == (1000, 150, 5)
+    assert cfg.rag.min_score == 0.0
+    assert cfg.rag.embed_batch_size == 16
+    assert cfg.rag.query_instruction == "Given a question, retrieve passages that answer it"
+    assert cfg.rag.reasoning_effort == "low"
+    assert (cfg.rag.max_query_chars, cfg.rag.max_document_ids) == (2000, 100)
+    assert cfg.rag.system_prompt == "Answer only from the numbered context."
+    assert cfg.rag.consumer.max_file_bytes == 10485760
+    assert cfg.rag.consumer.allow_skip_dim_check is False
+    assert cfg.rag_grpc.max_workers == 8
+
+
+def test_min_score_accepts_an_integer_and_a_fraction(tmp_path):
+    assert load(write(tmp_path, broken("min_score=0.0", "min_score=0"))).rag.min_score == 0.0
+    assert load(write(tmp_path, broken("min_score=0.0", "min_score=0.42"))).rag.min_score == 0.42
+
+
+def test_skip_dim_check_marker_is_read_when_present(tmp_path):
+    body = broken("max_file_bytes=10485760", "max_file_bytes=10485760\nallow_skip_dim_check=true")
+    assert load(write(tmp_path, body)).rag.consumer.allow_skip_dim_check is True
+
+
 def test_config_is_immutable(tmp_path):
     cfg = load(write(tmp_path, VALID_TOML))
     with pytest.raises(dataclasses.FrozenInstanceError):
@@ -197,6 +222,24 @@ REJECTIONS = [
     ("zero rag_grpc.port", "port=50051", "port=0", "rag_grpc.port"),
     ("boolean where an integer is expected", "top_k=5", "top_k=true", "rag.top_k"),
     ("string where an integer is expected", "top_k=5", 'top_k="5"', "rag.top_k"),
+    ("missing ollama.url", 'url="http://localhost:11434"', "", "ollama.url"),
+    ("zero chunk_size", "chunk_size=1000", "chunk_size=0", "rag.chunk_size"),
+    ("overlap equal to chunk_size", "chunk_overlap=150", "chunk_overlap=1000", "rag.chunk_overlap"),
+    ("negative overlap", "chunk_overlap=150", "chunk_overlap=-1", "rag.chunk_overlap"),
+    ("zero top_k", "top_k=5", "top_k=0", "rag.top_k"),
+    ("min_score of 1", "min_score=0.0", "min_score=1.0", "rag.min_score"),
+    ("negative min_score", "min_score=0.0", "min_score=-0.1", "rag.min_score"),
+    ("min_score as a string", "min_score=0.0", 'min_score="0.5"', "rag.min_score"),
+    ("min_score as a boolean", "min_score=0.0", "min_score=true", "rag.min_score"),
+    ("zero embed_batch_size", "embed_batch_size=16", "embed_batch_size=0", "rag.embed_batch_size"),
+    ("empty query_instruction", 'query_instruction="Given a question, retrieve passages that answer it"', 'query_instruction=""', "rag.query_instruction"),
+    ("unknown reasoning_effort", 'reasoning_effort="low"', 'reasoning_effort="max"', "rag.reasoning_effort"),
+    ("zero max_query_chars", "max_query_chars=2000", "max_query_chars=0", "rag.max_query_chars"),
+    ("zero max_document_ids", "max_document_ids=100", "max_document_ids=0", "rag.max_document_ids"),
+    ("empty system_prompt", "system_prompt='''Answer only from the numbered context.'''", 'system_prompt=""', "rag.system_prompt"),
+    ("zero max_file_bytes", "max_file_bytes=10485760", "max_file_bytes=0", "rag.consumer.max_file_bytes"),
+    ("skip marker not a boolean", "max_file_bytes=10485760", 'max_file_bytes=10485760\nallow_skip_dim_check="yes"', "rag.consumer.allow_skip_dim_check"),
+    ("zero max_workers", "max_workers=8", "max_workers=0", "rag_grpc.max_workers"),
 ]
 
 

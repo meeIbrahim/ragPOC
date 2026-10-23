@@ -7,14 +7,19 @@ service RagEngineService {
   // Standard unary call
   rpc Ask (AskRequest) returns (AskResponse);
 
-  // Streaming call
+  // Streaming call. Message 1 carries context_used and an empty answer; later messages carry
+  // only answer deltas (PRD L16).
   rpc AskStream (AskStreamRequest) returns (stream AskStreamResponse);
 }
 
 message AskRequest {
   string query = 1;
+  // Ignored in v1: no per-user scoping (PRD L8).
   string user_id = 2;
+  // Reserved and ignored: v1 is single-turn (PRD L9).
   repeated string chat_history = 3;
+  // Content hashes to search within. Empty searches every indexed document.
+  repeated string document_ids = 4;
 }
 
 message AskResponse {
@@ -25,8 +30,12 @@ message AskResponse {
 // Dedicated request for the streaming endpoint
 message AskStreamRequest {
   string query = 1;
+  // Ignored in v1: no per-user scoping (PRD L8).
   string user_id = 2;
+  // Reserved and ignored: v1 is single-turn (PRD L9).
   repeated string chat_history = 3;
+  // Content hashes to search within. Empty searches every indexed document.
+  repeated string document_ids = 4;
 }
 
 // Dedicated response for the streaming endpoint
@@ -36,7 +45,10 @@ message AskStreamResponse {
 }
 
 message Source {
+  // The document's content hash.
   string document_id = 1;
   string snippet = 2;
   float similarity_score = 3;
+  // The filename the document was first uploaded with.
+  string filename = 4;
 }

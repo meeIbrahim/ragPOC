@@ -1,2 +1,4 @@
 # Contract fixtures are compared byte for byte by the Go and Python tests; never rewrite line endings.
 contracts/** -text
+# Eval corpus files are hashed byte for byte (questions.jsonl expected_hash); never rewrite line endings.
+evals/corpus/** -text

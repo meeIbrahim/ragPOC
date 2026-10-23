@@ -119,11 +119,16 @@ services:
     build:
       context: ./services/rag-service
     environment:
-      # indexed | failed-retryable | failed-permanent | crash | slow | hang
-      RAG_STUB_MODE: ${RAG_STUB_MODE:-indexed}
+      # Empty runs the real ingest service (needs the host's Ollama). The e2e override sets a
+      # stub mode: indexed | failed-retryable | failed-permanent | crash | slow | hang
+      RAG_STUB_MODE: ${RAG_STUB_MODE:-}
+    # Ollama runs on the host (not in compose yet, backlog B5); deploy/config.compose.toml points
+    # [ollama].url at host.docker.internal. Docker Desktop resolves it already; this covers Linux.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./deploy/config.compose.toml:/config/config.toml:ro
-      # Where rag-migrate creates indexed_documents; the Phase 1 consumer writes it.
+      # Where rag-migrate creates indexed_documents; the consumer writes it.
       - rag_db:/data
     # PID 1 must be an init process: the consumer has no SIGTERM handler on purpose (no graceful
     # drain), and a PID 1 without a handler ignores SIGTERM, so `docker stop` would wait for SIGKILL.
@@ -133,6 +138,29 @@ services:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
+    restart: unless-stopped
+
+  # The gRPC query server (rag.v1.RagEngineService, reflection on, so grpcurl needs no .proto).
+  rag-server:
+    profiles: ["app"]
+    image: ragpoc-rag:${IMAGE_TAG:-dev}
+    build:
+      context: ./services/rag-service
+    command: ["python", "-m", "rag.server"]
+    environment:
+      # Passed from the host shell, never written to a file. `:-` and not `:?`, so infra-only and
+      # e2e runs do not need it; the server refuses to start without it.
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:50051:50051"
+    volumes:
+      - ./deploy/config.compose.toml:/config/config.toml:ro
+    init: true
+    depends_on:
+      rag-migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   # The e2e test binary, run by scripts/e2e.sh. It shares the center's SQLite volume (opened

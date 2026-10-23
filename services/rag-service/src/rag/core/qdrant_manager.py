@@ -6,19 +6,23 @@ import functools
 
 from qdrant_client import QdrantClient
 
-from rag.core.config_reader import get_config
+from rag.core.config_reader import Config, get_config
 
 
-@functools.cache
-def get_client() -> QdrantClient:
-    """One client per process, bounded by [rag].call_timeout. Creating it makes no request:
+def build_client(config: Config) -> QdrantClient:
+    """A client bounded by [rag].call_timeout. Creating it makes no request:
     check_compatibility=False skips the version probe the constructor would otherwise send."""
-    config = get_config()
     return QdrantClient(
         url=config.qdrant.url,
         timeout=int(config.rag.call_timeout.total_seconds()),
         check_compatibility=False,
     )
+
+
+@functools.cache
+def get_client() -> QdrantClient:
+    """One client per process, for the process-wide config."""
+    return build_client(get_config())
 
 
 def close_client() -> None:

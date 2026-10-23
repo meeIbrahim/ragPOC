@@ -35,6 +35,15 @@ services:
       - ./deploy/config.e2e.toml:/config/config.toml:ro
 
   rag-consumer:
+    environment:
+      # The e2e always runs the stub; scripts/e2e.sh switches the mode per scenario. Without a
+      # mode the consumer would run the real ingest service, which needs the host's Ollama.
+      RAG_STUB_MODE: ${RAG_STUB_MODE:-indexed}
+    volumes:
+      - ./deploy/config.e2e.toml:/config/config.toml:ro
+
+  rag-server:
+    ports: !reset []
     volumes:
       - ./deploy/config.e2e.toml:/config/config.toml:ro
 

@@ -310,7 +310,7 @@ func TestPort65535IsValid(t *testing.T) {
 // The compose and e2e files are separate full copies (decision D6), so each must load on its
 // own, hold only keys the services model, and keep the timings the e2e depends on.
 func TestDeployConfigsLoad(t *testing.T) {
-	for _, name := range []string{"config.compose.toml", "config.e2e.toml"} {
+	for _, name := range []string{"config.compose.toml", "config.e2e.toml", "config.faults.toml", "config.faults-blackhole.toml"} {
 		t.Run(name, func(t *testing.T) {
 			cfg, err := Load(filepath.Join("..", "..", "..", "..", "deploy", name))
 			if err != nil {

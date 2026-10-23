@@ -5,6 +5,7 @@ description = "RAG service: ingests documents from Redis Streams and answers que
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "groq>=0.30",
     "grpcio>=1.80.0",
     "grpcio-reflection>=1.80.0",
     "langchain-text-splitters>=0.3.11",
@@ -38,6 +39,8 @@ packages = [
 pythonpath = ["src"]
 testpaths = ["tests"]
 markers = [
-    "integration: needs a real Redis (set REDIS_URL, e.g. redis://localhost:6379); run with -m integration",
+    "integration: needs the compose infra (Redis, MinIO, Qdrant; `make up`); run with -m integration",
+    "ollama: needs the host Ollama with [rag].embedding_model pulled; run with -m ollama",
+    "groq: needs GROQ_API_KEY and network access to Groq; run with -m groq",
 ]
-addopts = "-m 'not integration'"
+addopts = "-m 'not integration and not ollama and not groq'"

@@ -120,8 +120,7 @@ def keep_pytest_log_capture(monkeypatch):
 
 
 def test_main_does_not_build_a_client_just_to_close_it(rag_config, monkeypatch, keep_pytest_log_capture):
-    monkeypatch.setattr(migration_main, "CreateSqLiteTables", Ok)
-    monkeypatch.setattr(migration_main, "QdrantCollection", Ok)
+    monkeypatch.setattr(migration_main, "MIGRATIONS", [Ok, Ok, Ok])
     assert migration_main.main() == 0
     assert qdrant_manager.get_client.cache_info().currsize == 0
 
@@ -145,8 +144,7 @@ def test_an_unbuildable_qdrant_url_exits_1_with_one_clean_failure(tmp_path, monk
 
 
 def test_a_failing_close_does_not_change_the_exit_code(rag_config, monkeypatch, caplog, keep_pytest_log_capture):
-    monkeypatch.setattr(migration_main, "CreateSqLiteTables", Ok)
-    monkeypatch.setattr(migration_main, "QdrantCollection", Ok)
+    monkeypatch.setattr(migration_main, "MIGRATIONS", [Ok, Ok, Ok])
 
     def explode():
         raise OSError("socket already closed")
