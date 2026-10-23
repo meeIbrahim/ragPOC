@@ -74,11 +74,89 @@ def test_the_flag_wins_over_the_environment(wired, monkeypatch):
     assert FakeStreamConsumer.instances[0].processor._mode is Mode.INDEXED
 
 
-def test_a_missing_mode_is_a_usage_error(wired, caplog):
+# ---- no mode: the real ingest service (spec R5, D6)
+
+
+class RealParts:
+    """Fakes standing in for rag.core.wiring, so the real path runs without any dependency."""
+
+    def __init__(self, dim=4096, exists=True):
+        from fakes import FakeEmbedder, FakeIndex
+
+        self.embedder = FakeEmbedder(dim=dim)
+        self.index = FakeIndex(exists=exists)
+        self.service = object()
+
+
+@pytest.fixture
+def real(wired, monkeypatch):
+    parts = RealParts()
+    monkeypatch.setattr(entry.wiring, "embedder", lambda config: parts.embedder)
+    monkeypatch.setattr(entry.wiring, "index", lambda config: parts.index)
+    monkeypatch.setattr(entry.wiring, "ingest_service", lambda config: parts.service)
+    monkeypatch.delenv("RAG_SKIP_DIM_CHECK", raising=False)
+    return parts
+
+
+@pytest.mark.parametrize("env", [None, ""])
+def test_no_mode_runs_the_real_ingest_service(real, monkeypatch, env):
+    if env is not None:
+        monkeypatch.setenv("RAG_STUB_MODE", env)  # compose passes an empty value
+    assert entry.main([]) == 0
+    (consumer,) = FakeStreamConsumer.instances
+    assert consumer.processor is real.service
+    assert real.index.names() == ["collection_exists"]
+    assert real.embedder.names() == ["dimension"]
+
+
+def test_a_wrong_embedding_dim_exits_2_before_reading(real, caplog):
+    real.embedder.dim = 1024
     with caplog.at_level(logging.ERROR):
         assert entry.main([]) == 2
-    assert "RAG_STUB_MODE" in caplog.text
     assert FakeStreamConsumer.instances == []
+    assert "1024" in caplog.text and "4096" in caplog.text
+
+
+def test_a_missing_collection_exits_2_before_reading(real, caplog):
+    real.index.exists = False
+    with caplog.at_level(logging.ERROR):
+        assert entry.main([]) == 2
+    assert "make run_migrations" in caplog.text
+    assert FakeStreamConsumer.instances == []
+
+
+def test_an_unreachable_dependency_exits_1_so_compose_restarts_it(real):
+    from rag.ports import DependencyUnavailable
+
+    real.index.error = DependencyUnavailable("qdrant", "ConnectError")
+    assert entry.main([]) == 1
+    assert FakeStreamConsumer.instances == []
+
+
+def test_the_skip_flag_alone_does_not_skip_the_dimension_check(real, monkeypatch):
+    monkeypatch.setenv("RAG_SKIP_DIM_CHECK", "1")
+    real.embedder.dim = 1024
+    assert entry.main([]) == 2
+
+
+def test_the_config_marker_alone_does_not_skip_the_dimension_check(real, rag_config, tmp_path, monkeypatch):
+    path = tmp_path / "faults.toml"
+    path.write_text((tmp_path / "config.toml").read_text().replace(
+        "max_file_bytes=10485760", "max_file_bytes=10485760\nallow_skip_dim_check=true"))
+    real.embedder.dim = 1024
+    assert entry.main(["--config", str(path)]) == 2
+
+
+def test_the_flag_and_the_marker_together_skip_the_check_with_a_warning(real, tmp_path, monkeypatch, caplog):
+    path = tmp_path / "faults.toml"
+    path.write_text((tmp_path / "config.toml").read_text().replace(
+        "max_file_bytes=10485760", "max_file_bytes=10485760\nallow_skip_dim_check=true"))
+    monkeypatch.setenv("RAG_SKIP_DIM_CHECK", "1")
+    real.embedder.dim = 1024
+    with caplog.at_level(logging.WARNING):
+        assert entry.main(["--config", str(path)]) == 0
+    assert real.embedder.names() == []
+    assert "dimension check skipped" in caplog.text
 
 
 @pytest.mark.parametrize("mode", ["explode", "", "INDEXED ", "failed_retryable"])
