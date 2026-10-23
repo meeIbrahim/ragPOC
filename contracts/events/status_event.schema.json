@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ragpoc.local/contracts/events/status_event.schema.json",
+  "title": "IngestionStatus payload (Python to Go), schema_version 1",
+  "description": "The `payload` field of an `ingest.status` stream entry whose `event_type` is `IngestionStatus`. PRD 4.2.",
+  "type": "object",
+  "required": ["id", "hash", "status", "attempts", "created_at", "schema_version"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "uuid. Tracing only."
+    },
+    "hash": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "enum": ["INDEXED", "FAILED"]
+    },
+    "attempts": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 2147483647,
+      "description": "Echoed unchanged from the ingest event."
+    },
+    "retryable": {
+      "type": "boolean",
+      "description": "Required when status is FAILED. false for POISON_MESSAGE."
+    },
+    "reason": {
+      "enum": [
+        "UNSUPPORTED_TYPE",
+        "EMPTY_TEXT",
+        "CORRUPT_FILE",
+        "DEPENDENCY_UNAVAILABLE",
+        "JOB_TIMEOUT",
+        "POISON_MESSAGE",
+        "INTERNAL"
+      ],
+      "description": "Required when status is FAILED."
+    },
+    "detail": {
+      "type": "string",
+      "description": "Short text, never document content. Log-only in Go v1."
+    },
+    "chunk_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 2147483647,
+      "description": "Informational. INDEXED only."
+    },
+    "created_at": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?Z$",
+      "description": "RFC 3339 UTC."
+    },
+    "schema_version": {
+      "const": 1
+    }
+  },
+  "if": {
+    "properties": { "status": { "const": "FAILED" } },
+    "required": ["status"]
+  },
+  "then": {
+    "required": ["retryable", "reason"]
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,8 @@
+Dockerfile
+.dockerignore
+.venv/
+**/__pycache__/
+.pytest_cache/
+tests/
+sqlite_db/
+*.egg-info/

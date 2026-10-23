@@ -1,0 +1,69 @@
+# Config for the compose e2e (`make e2e`): the compose hostnames plus short timings, so the crash,
+# hang and slow scenarios finish in about a minute each instead of an hour.
+# The MinIO credentials are the local development defaults: POC only.
+
+[minio]
+url="minio:9000"
+access_key="minio_user"
+secret_key="minio_password"
+upload_bucket="upload-bucket"
+ingestion_bucket="ingestion-bucket"
+
+[sqlite]
+dir="/data/rag"
+
+[qdrant]
+url="http://qdrant:6333"
+
+[rag_grpc]
+port=50051
+
+[rag]
+collection="pdf-fixed"
+embedding_model="qwen3-embedding"
+embedding_dim=4096
+llm_model="openai/gpt-oss-120b"
+top_k=5
+chunk_size=0
+chunk_overlap=0
+# One publish attempt may cost up to connect + read timeout (5s + max(5s, 7s) = 12s), which is
+# more than min_idle (10s) below, so no publish retry ever fits in e2e: a failed publish is
+# left to redelivery. Accepted; the retry path is covered by the Python unit tests.
+call_timeout="5s"
+
+[rag.consumer]
+# A job past 5s is JOB_TIMEOUT; a step that never returns is killed at 5s + 2s = 7s.
+job_timeout="5s"
+watchdog_grace="2s"
+# Must exceed job_timeout + watchdog_grace (7s). Four deliveries take ~40s: crash/hang poison.
+min_idle="10s"
+recovery_interval="2s"
+poison_threshold=3
+# Must exceed job_timeout
+consumer_cleanup_idle="15s"
+
+[redis]
+host="redis"
+port=6379
+stream="ingest.docs"
+consumer_group="rag-pdf-fixed"
+stream_max_len=324000
+status_stream="ingest.status"
+status_consumer_group="center-status"
+
+[ingestion]
+max_attempts=3
+allowed_extensions=[".pdf", ".txt", ".md"]
+
+[go]
+port=8080
+sqlite_dir="/data/go"
+
+[go.status_consumer]
+entry_timeout="5s"
+# Long, so an entry the cleanup check leaves pending is not reclaimed during the test...
+min_idle="60s"
+recovery_interval="2s"
+poison_threshold=3
+# ...and short, so an idle consumer with nothing pending disappears within a few seconds.
+consumer_cleanup_idle="5s"

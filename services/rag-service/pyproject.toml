@@ -1,0 +1,43 @@
+[project]
+name = "rag-service"
+version = "0.1.0"
+description = "RAG service: ingests documents from Redis Streams and answers questions over gRPC"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "grpcio>=1.80.0",
+    "grpcio-reflection>=1.80.0",
+    "langchain-text-splitters>=0.3.11",
+    "minio>=7.2.20",
+    "ollama>=0.6.2",
+    "pypdf>=6.16.1",
+    "qdrant-client>=1.16.1",
+    "redis>=8,<9",
+]
+
+[dependency-groups]
+dev = [
+    "debugpy>=1.8.21",
+    "grpcio-tools>=1.80.0",
+    "jsonschema>=4.23.0",
+    "pytest>=8.4.2",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = [
+    "src/rag",
+    "src/migration",
+    "src/generated",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+markers = [
+    "integration: needs a real Redis (set REDIS_URL, e.g. redis://localhost:6379); run with -m integration",
+]
+addopts = "-m 'not integration'"

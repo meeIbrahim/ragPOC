@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ragpoc.local/contracts/events/ingest_event.schema.json",
+  "title": "IngestionRequest payload (Go to Python), schema_version 1",
+  "description": "The `payload` field of an `ingest.docs` stream entry whose `event_type` is `IngestionRequest`. PRD 4.1.",
+  "type": "object",
+  "required": ["id", "hash", "filename", "bucket_path", "size", "attempts", "created_at", "schema_version"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "uuid per publish. Tracing only."
+    },
+    "hash": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Document identity: SHA-256 of the content, computed by Go."
+    },
+    "filename": {
+      "type": "string",
+      "minLength": 1,
+      "description": "From the first upload. The extension selects the parser."
+    },
+    "bucket_path": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Ingestion bucket object key (aa/bb/<hash>), not a bucket name."
+    },
+    "size": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Bytes."
+    },
+    "attempts": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "document_store.retries at publish. Python echoes it back unchanged."
+    },
+    "created_at": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?Z$",
+      "description": "RFC 3339 UTC as emitted by Go time.Time: no fraction when zero, otherwise 1 to 9 digits with trailing zeros trimmed."
+    },
+    "schema_version": {
+      "const": 1
+    }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,6 @@
+version: v2
+modules:
+  - path: protos # This tells buf to treat 'protos' as the root directory
+lint:
+  use:
+    - STANDARD

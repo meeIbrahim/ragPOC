@@ -1,0 +1,42 @@
+syntax = "proto3";
+
+package rag.v1;
+
+// The RAG Inference Service
+service RagEngineService {
+  // Standard unary call
+  rpc Ask (AskRequest) returns (AskResponse);
+
+  // Streaming call
+  rpc AskStream (AskStreamRequest) returns (stream AskStreamResponse);
+}
+
+message AskRequest {
+  string query = 1;
+  string user_id = 2;
+  repeated string chat_history = 3;
+}
+
+message AskResponse {
+  string answer = 1;
+  repeated Source context_used = 2;
+}
+
+// Dedicated request for the streaming endpoint
+message AskStreamRequest {
+  string query = 1;
+  string user_id = 2;
+  repeated string chat_history = 3;
+}
+
+// Dedicated response for the streaming endpoint
+message AskStreamResponse {
+  string answer = 1;
+  repeated Source context_used = 2;
+}
+
+message Source {
+  string document_id = 1;
+  string snippet = 2;
+  float similarity_score = 3;
+}

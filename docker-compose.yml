@@ -1,0 +1,162 @@
+# The whole system for local runs.
+#
+#   docker compose up -d                     infrastructure only (MinIO, Qdrant, Redis): the dev loop,
+#                                            where the Go API and the worker run on the host
+#   docker compose --profile app up -d --build
+#                                            the whole system in containers (or `make stack`)
+#   make e2e                                 the compose e2e in an isolated project (see
+#                                            scripts/e2e.sh and docker-compose.e2e.yml)
+#
+# The application services sit under the `app` profile on purpose: a containerized center and
+# consumer next to a host dev loop would share the same Redis groups and take its entries.
+# No container_name is set, so several projects (this one and the e2e one) can run side by side.
+# Published ports are bound to loopback: Redis has no password.
+
+services:
+  minio:
+    # Pinned (tag and digest) so the e2e gate is reproducible. Bump deliberately.
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    environment:
+      MINIO_ROOT_USER: minio_user
+      MINIO_ROOT_PASSWORD: minio_password
+    volumes:
+      - ./ingestion_docs/data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  qdrant:
+    image: qdrant/qdrant:v1.19.0@sha256:057ee3a8da769fe7310dd3537b4dc7583bf87a95ce8ac43c0af5a46bc580d1fc
+    ports:
+      - "127.0.0.1:6333:6333"
+    volumes:
+      - ./qdrant_data:/qdrant/storage
+    healthcheck:
+      # The image has neither curl nor wget, only bash.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/6333"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:7.4@sha256:4fa24486b8bcca8eec45ee0eb166edc674795e53a2b53d1a9ef263eecebaac85
+    ports:
+      - "127.0.0.1:6379:6379"
+    # An entry larger than this is refused by Redis instead of being read whole into the
+    # consumer's memory (the consumer only checks size after the client has read the entry).
+    command: ["redis-server", "--proto-max-bulk-len", "16777216"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # One-shot: creates the SQLite schema and the two MinIO buckets (Go owns both buckets).
+  center-migrate:
+    profiles: ["app"]
+    image: ragpoc-center:${IMAGE_TAG:-dev}
+    build:
+      context: ./services/center
+      target: runtime
+    entrypoint: ["migrate"]
+    command: ["-config=/config/config.toml"]
+    volumes:
+      - ./deploy/config.compose.toml:/config/config.toml:ro
+      - center_db:/data
+    depends_on:
+      minio:
+        condition: service_healthy
+    restart: "no"
+
+  # One-shot: creates the indexed_documents table and the Qdrant collection.
+  rag-migrate:
+    profiles: ["app"]
+    image: ragpoc-rag:${IMAGE_TAG:-dev}
+    build:
+      context: ./services/rag-service
+    command: ["python", "-m", "migration.main"]
+    volumes:
+      - ./deploy/config.compose.toml:/config/config.toml:ro
+      - rag_db:/data
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    restart: "no"
+
+  center:
+    profiles: ["app"]
+    image: ragpoc-center:${IMAGE_TAG:-dev}
+    build:
+      context: ./services/center
+      target: runtime
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./deploy/config.compose.toml:/config/config.toml:ro
+      - center_db:/data
+    depends_on:
+      center-migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      # Any listener on the port: the image has busybox `nc`, and every HTTP route needs input.
+      test: ["CMD", "nc", "-z", "127.0.0.1", "8080"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  rag-consumer:
+    profiles: ["app"]
+    image: ragpoc-rag:${IMAGE_TAG:-dev}
+    build:
+      context: ./services/rag-service
+    environment:
+      # indexed | failed-retryable | failed-permanent | crash | slow | hang
+      RAG_STUB_MODE: ${RAG_STUB_MODE:-indexed}
+    volumes:
+      - ./deploy/config.compose.toml:/config/config.toml:ro
+      # Where rag-migrate creates indexed_documents; the Phase 1 consumer writes it.
+      - rag_db:/data
+    # PID 1 must be an init process: the consumer has no SIGTERM handler on purpose (no graceful
+    # drain), and a PID 1 without a handler ignores SIGTERM, so `docker stop` would wait for SIGKILL.
+    init: true
+    depends_on:
+      rag-migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # The e2e test binary, run by scripts/e2e.sh. It shares the center's SQLite volume (opened
+  # read-only by the test) and reaches everything else by service name.
+  e2e:
+    profiles: ["e2e"]
+    image: ragpoc-center-e2e:${IMAGE_TAG:-dev}
+    build:
+      context: ./services/center
+      target: e2e
+    environment:
+      CENTER_URL: http://center:8080
+      REDIS_ADDR: redis:6379
+      CENTER_DB: /data/go/center.db
+    volumes:
+      - ./deploy/config.compose.toml:/config/config.toml:ro
+      # Read-write on purpose: a read-only mount cannot create SQLite's WAL shared-memory file.
+      # The test opens the database itself with mode=ro.
+      - center_db:/data
+    depends_on:
+      center:
+        condition: service_healthy
+    restart: "no"
+
+volumes:
+  center_db:
+  rag_db:

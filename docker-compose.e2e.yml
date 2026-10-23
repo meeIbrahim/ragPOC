@@ -1,0 +1,47 @@
+# Override for the compose e2e (scripts/e2e.sh runs it as project `ragpoc-e2e`):
+#
+#   docker compose -p ragpoc-e2e -f docker-compose.yml -f docker-compose.e2e.yml ...
+#
+# - MinIO and Qdrant keep their data in named volumes instead of the dev bind mounts, so
+#   `down -v` wipes exactly the e2e state and your dev data is never touched.
+# - No ports are published, so it runs next to the dev stack without clashing with it.
+# - Every service reads deploy/config.e2e.toml (short timings, `call_timeout=5s`).
+
+services:
+  minio:
+    ports: !reset []
+    volumes:
+      - minio_e2e:/data
+
+  qdrant:
+    ports: !reset []
+    volumes:
+      - qdrant_e2e:/qdrant/storage
+
+  redis:
+    ports: !reset []
+
+  center-migrate:
+    volumes:
+      - ./deploy/config.e2e.toml:/config/config.toml:ro
+
+  rag-migrate:
+    volumes:
+      - ./deploy/config.e2e.toml:/config/config.toml:ro
+
+  center:
+    ports: !reset []
+    volumes:
+      - ./deploy/config.e2e.toml:/config/config.toml:ro
+
+  rag-consumer:
+    volumes:
+      - ./deploy/config.e2e.toml:/config/config.toml:ro
+
+  e2e:
+    volumes:
+      - ./deploy/config.e2e.toml:/config/config.toml:ro
+
+volumes:
+  minio_e2e:
+  qdrant_e2e:

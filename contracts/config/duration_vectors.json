@@ -1,0 +1,34 @@
+{
+  "grammar": "^[0-9]{1,6}(s|m|h)$",
+  "valid": [
+    {"text": "0s", "seconds": 0},
+    {"text": "5s", "seconds": 5},
+    {"text": "60s", "seconds": 60},
+    {"text": "2m", "seconds": 120},
+    {"text": "15m", "seconds": 900},
+    {"text": "1h", "seconds": 3600},
+    {"text": "1021s", "seconds": 1021},
+    {"text": "007s", "seconds": 7},
+    {"text": "999999h", "seconds": 3599996400}
+  ],
+  "invalid": [
+    "",
+    "0",
+    "15",
+    "m",
+    "-5m",
+    "+5m",
+    "1h30m",
+    "1.5m",
+    "500ms",
+    "2us",
+    "15M",
+    "15 m",
+    " 15m",
+    "15m ",
+    "15m\n",
+    "1d",
+    "abc",
+    "1000000h"
+  ]
+}
