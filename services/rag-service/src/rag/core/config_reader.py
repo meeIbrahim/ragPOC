@@ -42,6 +42,9 @@ _MAX_PORT = 65535
 # filename, so ".tar.gz" could never match. The same set as the Go reader.
 _EXTENSION_FORBIDDEN = ".//\\ \t"
 
+# What Groq accepts for gpt-oss models' reasoning_effort.
+REASONING_EFFORTS = ("low", "medium", "high")
+
 
 def parse_duration(value: Any) -> timedelta:
     """Parse "15m" style durations. Anything but a string in the shared grammar is an error."""
@@ -72,6 +75,11 @@ class QdrantConfig:
 
 
 @dataclass(frozen=True)
+class OllamaConfig:
+    url: str
+
+
+@dataclass(frozen=True)
 class RagConsumerConfig:
     job_timeout: timedelta
     watchdog_grace: timedelta
@@ -79,6 +87,9 @@ class RagConsumerConfig:
     recovery_interval: timedelta
     poison_threshold: int
     consumer_cleanup_idle: timedelta
+    max_file_bytes: int
+    # Only the fault runbook's config sets this: it lets RAG_SKIP_DIM_CHECK take effect.
+    allow_skip_dim_check: bool = False
 
 
 @dataclass(frozen=True)
@@ -91,12 +102,20 @@ class RagConfig:
     chunk_size: int
     chunk_overlap: int
     call_timeout: timedelta
+    min_score: float
+    embed_batch_size: int
+    query_instruction: str
+    reasoning_effort: str
+    max_query_chars: int
+    max_document_ids: int
+    system_prompt: str
     consumer: RagConsumerConfig
 
 
 @dataclass(frozen=True)
 class RagGrpcConfig:
     port: int
+    max_workers: int
 
 
 @dataclass(frozen=True)
@@ -121,6 +140,7 @@ class Config:
     minio: MinioConfig
     sqlite: SqliteConfig
     qdrant: QdrantConfig
+    ollama: OllamaConfig
     rag: RagConfig
     rag_grpc: RagGrpcConfig
     redis: RedisConfig
@@ -139,12 +159,16 @@ _KNOWN: dict[str, Any] = {
     "minio": _leaves("url", "access_key", "secret_key", "upload_bucket", "ingestion_bucket"),
     "sqlite": _leaves("dir"),
     "qdrant": _leaves("url"),
-    "rag_grpc": _leaves("port"),
+    "ollama": _leaves("url"),
+    "rag_grpc": _leaves("port", "max_workers"),
     "rag": {
         **_leaves("collection", "embedding_model", "embedding_dim", "llm_model", "top_k",
-                  "chunk_size", "chunk_overlap", "call_timeout"),
+                  "chunk_size", "chunk_overlap", "call_timeout", "min_score", "embed_batch_size",
+                  "query_instruction", "reasoning_effort", "max_query_chars", "max_document_ids",
+                  "system_prompt"),
         "consumer": _leaves("job_timeout", "watchdog_grace", "min_idle", "recovery_interval",
-                            "poison_threshold", "consumer_cleanup_idle"),
+                            "poison_threshold", "consumer_cleanup_idle", "max_file_bytes",
+                            "allow_skip_dim_check"),
     },
     "redis": _leaves("host", "port", "stream", "consumer_group", "stream_max_len", "status_stream",
                      "status_consumer_group"),
@@ -252,6 +276,30 @@ class _Reader:
             self._fail(path, key, f"must be <= {maximum}")
         return value
 
+    def fraction(self, path: tuple[str, ...], key: str) -> float:
+        """A number in [0, 1). TOML integers count (0 means 0.0); booleans do not."""
+        value = self._table(path).get(key)
+        if not isinstance(value, int | float) or isinstance(value, bool):
+            self._fail(path, key, "must be a number")
+            return 0.0
+        if not 0.0 <= value < 1.0:
+            self._fail(path, key, "must be >= 0 and < 1")
+        return float(value)
+
+    def optional_flag(self, path: tuple[str, ...], key: str) -> bool:
+        value = self._table(path).get(key, False)
+        if not isinstance(value, bool):
+            self._fail(path, key, "must be true or false")
+            return False
+        return value
+
+    def choice(self, path: tuple[str, ...], key: str, allowed: tuple[str, ...]) -> str:
+        value = self._table(path).get(key)
+        if value not in allowed:
+            self._fail(path, key, f"must be one of {', '.join(allowed)}")
+            return allowed[0]
+        return value
+
     def duration(self, path: tuple[str, ...], key: str) -> timedelta:
         value = self._table(path).get(key)
         dotted = ".".join((*path, key))
@@ -294,6 +342,7 @@ class _Reader:
         )
         sqlite = SqliteConfig(dir=self.text(("sqlite",), "dir"))
         qdrant = QdrantConfig(url=self.text(("qdrant",), "url"))
+        ollama = OllamaConfig(url=self.text(("ollama",), "url"))
 
         consumer_path = ("rag", "consumer")
         consumer = RagConsumerConfig(
@@ -303,20 +352,34 @@ class _Reader:
             recovery_interval=self.duration(consumer_path, "recovery_interval"),
             poison_threshold=self.integer(consumer_path, "poison_threshold", 1),
             consumer_cleanup_idle=self.duration(consumer_path, "consumer_cleanup_idle"),
+            max_file_bytes=self.integer(consumer_path, "max_file_bytes", 1),
+            allow_skip_dim_check=self.optional_flag(consumer_path, "allow_skip_dim_check"),
         )
+        chunk_size = self.integer(("rag",), "chunk_size", 1)
         rag = RagConfig(
             collection=self.text(("rag",), "collection"),
             embedding_model=self.text(("rag",), "embedding_model"),
             # 0 is allowed here: the Qdrant migration insists on a real size, the consumer does not.
             embedding_dim=self.integer(("rag",), "embedding_dim", 0),
             llm_model=self.text(("rag",), "llm_model"),
-            top_k=self.integer(("rag",), "top_k", 0),
-            chunk_size=self.integer(("rag",), "chunk_size", 0),
-            chunk_overlap=self.integer(("rag",), "chunk_overlap", 0),
+            top_k=self.integer(("rag",), "top_k", 1),
+            chunk_size=chunk_size,
+            # An overlap as large as the chunk would never advance through the text.
+            chunk_overlap=self.integer(("rag",), "chunk_overlap", 0, max(chunk_size - 1, 0)),
             call_timeout=self.duration(("rag",), "call_timeout"),
+            min_score=self.fraction(("rag",), "min_score"),
+            embed_batch_size=self.integer(("rag",), "embed_batch_size", 1),
+            query_instruction=self.text(("rag",), "query_instruction"),
+            reasoning_effort=self.choice(("rag",), "reasoning_effort", REASONING_EFFORTS),
+            max_query_chars=self.integer(("rag",), "max_query_chars", 1),
+            max_document_ids=self.integer(("rag",), "max_document_ids", 1),
+            system_prompt=self.text(("rag",), "system_prompt"),
             consumer=consumer,
         )
-        rag_grpc = RagGrpcConfig(port=self.integer(("rag_grpc",), "port", 1, _MAX_PORT))
+        rag_grpc = RagGrpcConfig(
+            port=self.integer(("rag_grpc",), "port", 1, _MAX_PORT),
+            max_workers=self.integer(("rag_grpc",), "max_workers", 1),
+        )
         redis = RedisConfig(
             host=self.text(("redis",), "host"),
             port=self.integer(("redis",), "port", 1, _MAX_PORT),
@@ -337,7 +400,7 @@ class _Reader:
         if not (timing_keys & self.invalid_durations):
             self._check_timing(consumer)
 
-        return Config(minio, sqlite, qdrant, rag, rag_grpc, redis, ingestion, tuple(self._unknown_keys()))
+        return Config(minio, sqlite, qdrant, ollama, rag, rag_grpc, redis, ingestion, tuple(self._unknown_keys()))
 
     def _check_timing(self, c: RagConsumerConfig) -> None:
         # A live job must never look idle enough to be reclaimed by XAUTOCLAIM.

@@ -14,6 +14,7 @@ type Config struct {
 	Minio     MinioConfig     `toml:"minio"`
 	SQLite    SQLiteConfig    `toml:"sqlite"`
 	Qdrant    QdrantConfig    `toml:"qdrant"`
+	Ollama    OllamaConfig    `toml:"ollama"`
 	RAGGRPC   RAGGRPCConfig   `toml:"rag_grpc"`
 	RAG       RAGConfig       `toml:"rag"`
 	Redis     RedisConfig     `toml:"redis"`
@@ -69,8 +70,16 @@ type QdrantConfig struct {
 	URL string `toml:"url"`
 }
 
+// OllamaConfig is read only by the Python RAG service. Go models it so the shared file has no
+// unknown keys; it is not validated here.
+type OllamaConfig struct {
+	URL string `toml:"url"`
+}
+
 type RAGGRPCConfig struct {
 	Port int `toml:"port"`
+	// MaxWorkers is the Python gRPC server's thread pool size. Not used or validated by Go.
+	MaxWorkers int `toml:"max_workers"`
 }
 
 type RAGConfig struct {
@@ -82,8 +91,19 @@ type RAGConfig struct {
 	ChunkSize      int    `toml:"chunk_size"`
 	ChunkOverlap   int    `toml:"chunk_overlap"`
 	// CallTimeout bounds each external call the RAG service makes (MinIO, Ollama, Qdrant, Groq).
-	CallTimeout Duration          `toml:"call_timeout"`
-	Consumer    RAGConsumerConfig `toml:"consumer"`
+	CallTimeout Duration `toml:"call_timeout"`
+
+	// Read only by the Python RAG service (retrieval, embedding and generation). Go models them
+	// so the shared file has no unknown keys; it does not use or validate them.
+	MinScore         float64 `toml:"min_score"`
+	EmbedBatchSize   int     `toml:"embed_batch_size"`
+	QueryInstruction string  `toml:"query_instruction"`
+	ReasoningEffort  string  `toml:"reasoning_effort"`
+	MaxQueryChars    int     `toml:"max_query_chars"`
+	MaxDocumentIDs   int     `toml:"max_document_ids"`
+	SystemPrompt     string  `toml:"system_prompt"`
+
+	Consumer RAGConsumerConfig `toml:"consumer"`
 }
 
 // RAGConsumerConfig is the Python ingest consumer's tuning. Go does not run it but validates
@@ -95,6 +115,9 @@ type RAGConsumerConfig struct {
 	RecoveryInterval    Duration `toml:"recovery_interval"`
 	PoisonThreshold     int      `toml:"poison_threshold"`
 	ConsumerCleanupIdle Duration `toml:"consumer_cleanup_idle"`
+	// Python-only: the ingest size cap and the fault-runbook marker. Not validated by Go.
+	MaxFileBytes      int64 `toml:"max_file_bytes"`
+	AllowSkipDimCheck bool  `toml:"allow_skip_dim_check"`
 }
 
 type RedisConfig struct {
