@@ -92,7 +92,7 @@ def _coerce(enum_type: type[StrEnum], value: Any, name: str) -> Any:
         raise InvalidEventError(f"unknown {name} {_clip(value)}") from None
 
 
-def _format_timestamp(moment: datetime) -> str:
+def format_timestamp(moment: datetime) -> str:
     return moment.astimezone(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
@@ -280,7 +280,7 @@ class StatusEvent:
             document["detail"] = self.detail
         if self.chunk_count is not None:
             document["chunk_count"] = self.chunk_count
-        document["created_at"] = _format_timestamp(self.created_at)
+        document["created_at"] = format_timestamp(self.created_at)
         document["schema_version"] = SCHEMA_VERSION
         return document
 
