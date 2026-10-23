@@ -11,6 +11,7 @@ from groq import Groq
 from rag.adapters.groq_llm import GroqLLM
 from rag.adapters.minio_blob_store import MinioBlobStore
 from rag.adapters.ollama_embedder import OllamaEmbedder
+from rag.adapters.parsers import parser_for
 from rag.adapters.qdrant_index import QdrantIndex
 from rag.adapters.sqlite_index_registry import SqliteIndexRegistry
 from rag.core import minio_client, qdrant_manager
@@ -27,9 +28,7 @@ def embedder(config: Config) -> OllamaEmbedder:
 
 
 def index(config: Config) -> QdrantIndex:
-    return QdrantIndex(
-        qdrant_manager.build_client(config), collection=config.rag.collection, batch_size=config.rag.embed_batch_size
-    )
+    return QdrantIndex(qdrant_manager.build_client(config), collection=config.rag.collection)
 
 
 def registry(config: Config) -> SqliteIndexRegistry:
@@ -61,6 +60,7 @@ def ingest_service(config: Config) -> IngestService:
             embed_batch_size=config.rag.embed_batch_size,
             max_file_bytes=config.rag.consumer.max_file_bytes,
         ),
+        parser_for=parser_for,
     )
 
 

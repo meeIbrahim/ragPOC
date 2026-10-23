@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 import pytest
 
 from fakes import FakeBlobStore, FakeEmbedder, FakeIndex, FakeParser, FakeRegistry
+from rag.adapters.parsers import parser_for
 from rag.ingest.errors import PermanentError, TransientError
 from rag.ingest.outcome import Failed, Indexed, run_job
 from rag.ingest.service import IngestService, IngestSettings
@@ -47,8 +48,6 @@ class Harness:
 
     def _parser_for(self, filename):
         self.parsed_for.append(filename)
-        from rag.adapters.parsers import parser_for
-
         parser_for(filename)  # the real dispatch decides support; the fake parser returns the text
         return self.parser
 
@@ -137,10 +136,11 @@ def test_dependency_outages_are_retryable_E9(failing):
 
 def test_the_deadline_is_checked_between_embedding_batches_E10():
     clock = Clock()
-    h = Harness(on_embed=lambda: setattr(clock, "t", clock.t + 40))  # each batch takes 40s
+    h = Harness(on_embed=lambda: setattr(clock, "t", clock.t + 70))  # one batch outlasts the 60s deadline
     outcome = h.run(Deadline.after(60, clock))
     assert (outcome.retryable, outcome.reason) == (True, Reason.JOB_TIMEOUT)
-    assert h.embedder.names() == ["embed_documents", "embed_documents"]  # stopped before the 3rd
+    # 4 chunks in batches of 2: the check before the 2nd batch stops the job.
+    assert h.embedder.names() == ["embed_documents"]
     assert h.index.calls == [] and h.registry.names() == ["exists"]
 
 

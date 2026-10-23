@@ -14,6 +14,7 @@ Failure contract:
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -29,6 +30,19 @@ class DependencyUnavailable(Exception):
         self.service = service
         self.detail = detail
         super().__init__(f"{service}: {detail}")
+
+
+class ModelNotAvailable(Exception):
+    """The embedding model is not installed where the embedder runs. Only a setup change helps."""
+
+    def __init__(self, model: str) -> None:
+        self.model = model
+        super().__init__(model)
+
+
+def extension(filename: str) -> str:
+    """The lowercase extension: ".PDF" -> ".pdf"; "notes" and ".pdf" (a dotfile) -> ""."""
+    return os.path.splitext(filename)[1].lower()
 
 
 @dataclass(frozen=True)
@@ -76,13 +90,20 @@ class Parser(Protocol):
         ...
 
 
+class ParserFor(Protocol):
+    def __call__(self, filename: str) -> Parser:
+        """The parser for the filename's extension; unsupported ones raise PermanentError."""
+        ...
+
+
 class Embedder(Protocol):
     def embed_documents(self, texts: Sequence[str]) -> list[Vector]: ...
 
     def embed_query(self, text: str) -> Vector: ...
 
     def dimension(self) -> int:
-        """The model's output size, measured by embedding a probe string."""
+        """The model's output size, measured by embedding a probe string. Raises
+        ModelNotAvailable when the model is not installed."""
         ...
 
 

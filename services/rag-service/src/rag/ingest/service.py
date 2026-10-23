@@ -10,7 +10,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from rag.adapters.parsers import extension, parser_for
 from rag.ingest import chunking
 from rag.ingest.errors import PermanentError, TransientError
 from rag.ingest.outcome import Indexed, Outcome
@@ -20,9 +19,10 @@ from rag.ports import (
     Embedder,
     IndexedDocument,
     IndexRegistry,
-    Parser,
+    ParserFor,
     Point,
     VectorIndex,
+    extension,
 )
 from rag.transport.status_event import IngestEvent, Reason
 from rag.transport.watchdog import Deadline
@@ -44,7 +44,7 @@ class IngestService:
         embedder: Embedder,
         index: VectorIndex,
         settings: IngestSettings,
-        parser_for: Callable[[str], Parser] = parser_for,
+        parser_for: ParserFor,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._registry = registry

@@ -6,8 +6,9 @@ Deletes every point in [rag].collection and every indexed_documents row; keeps t
 its payload index and the table. Without --yes it only prints what it would delete. It acts on
 whatever the config points at: never point it at shared data.
 
-Needed after changing chunk_size or chunk_overlap: otherwise every document is skipped as
-already indexed.
+Needed after changing chunk_size or chunk_overlap, and before re-creating the collection for a
+new embedding model: otherwise every document is skipped as already indexed. It still clears the
+rows when the collection no longer exists.
 """
 
 from __future__ import annotations
@@ -25,15 +26,19 @@ EXIT_ERROR = 2
 
 
 def run(index: VectorIndex, registry: IndexRegistry, collection: str, yes: bool) -> int:
-    points, rows = index.count(), registry.count()
+    # A dropped collection (e.g. after an embedding_dim change) still leaves registry rows that
+    # would make every re-ingest skip, so the rows are cleared either way.
+    exists = index.collection_exists()
+    points, rows = (index.count() if exists else 0), registry.count()
+    where = f"{points} points from {collection!r}" if exists else f"no points ({collection!r} does not exist)"
     if not yes:
-        print(f"would delete {points} points from {collection!r} and {rows} indexed_documents rows; "
-              "run again with --yes to do it")
+        print(f"would delete {where} and {rows} indexed_documents rows; run again with --yes to do it")
         return EXIT_NOT_CONFIRMED
     # Rows first: a crash in between leaves points without rows, which re-ingest replaces.
     registry.clear()
-    index.clear()
-    print(f"deleted {points} points from {collection!r} and {rows} indexed_documents rows")
+    if exists:
+        index.clear()
+    print(f"deleted {where} and {rows} indexed_documents rows")
     return EXIT_OK
 
 

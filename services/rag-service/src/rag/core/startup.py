@@ -5,7 +5,7 @@ Each failure is a StartupError whose message says how to fix it; entry points lo
 
 from __future__ import annotations
 
-from rag.ports import DependencyUnavailable, Embedder, VectorIndex
+from rag.ports import DependencyUnavailable, Embedder, ModelNotAvailable, VectorIndex
 
 
 class StartupError(Exception):
@@ -23,13 +23,16 @@ def check_embedding_dim(embedder: Embedder, expected: int, model: str) -> None:
     """The model's output size must match the collection's, or every upsert would fail later."""
     try:
         actual = embedder.dimension()
+    except ModelNotAvailable:
+        raise StartupError(f"embedding model {model!r} is not available in Ollama: run `ollama pull {model}`") from None
     except DependencyUnavailable as exc:
         raise StartupError(f"cannot reach the embedder to check its dimension ({exc})", transient=True) from None
     if actual != expected:
         raise StartupError(
             f"embedding model {model!r} outputs {actual} dimensions but [rag].embedding_dim is {expected}: "
-            "set embedding_dim to the model's size and re-create the Qdrant collection (drop it, then "
-            "`make run_migrations`), or use the model the collection was built for"
+            "set embedding_dim to the model's size, then `make reset_index ARGS=--yes` (or the documents "
+            "are skipped as already indexed), drop the Qdrant collection and `make run_migrations`; "
+            "or use the model the collection was built for"
         )
 
 

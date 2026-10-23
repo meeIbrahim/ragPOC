@@ -8,8 +8,7 @@ from collections.abc import Sequence
 import httpx
 from ollama import Client, ResponseError
 
-from rag.core.startup import StartupError
-from rag.ports import DependencyUnavailable, Vector
+from rag.ports import DependencyUnavailable, ModelNotAvailable, Vector
 
 logger = logging.getLogger(__name__)
 
@@ -27,8 +26,10 @@ class OllamaEmbedder:
         try:
             response = self._client.embed(model=self._model, input=list(texts))
         except (ConnectionError, httpx.HTTPError, ResponseError) as exc:
-            # A 404 mid-run means the model was removed under a running service: retryable,
-            # like any other outage. At startup, dimension() turns it into a clear message.
+            # Every Ollama error is retryable here, 4xx included: chunks are bounded by
+            # chunk_size and Ollama truncates long input by default, so a 4xx points at the
+            # server (e.g. a 404 when the model was removed under a running service), and
+            # max_attempts / poison bound the retries. At startup dimension() reports a 404.
             raise DependencyUnavailable(_SERVICE, _describe(exc)) from exc
         vectors = [list(v) for v in response.embeddings]
         if len(vectors) != len(texts):
@@ -51,9 +52,7 @@ class OllamaEmbedder:
         except DependencyUnavailable as exc:
             cause = exc.__cause__
             if isinstance(cause, ResponseError) and cause.status_code == 404:
-                raise StartupError(
-                    f"embedding model {self._model!r} is not available in Ollama: run `ollama pull {self._model}`"
-                ) from None
+                raise ModelNotAvailable(self._model) from None
             raise
 
 

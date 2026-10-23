@@ -7,12 +7,15 @@ carries the sources and an empty answer, then only answer deltas follow (PRD L16
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 
 from rag.ports import DependencyUnavailable, Embedder, Hit, LLM, VectorIndex
 
 NO_RELEVANT_ANSWER = "No relevant information was found in the indexed documents."
+
+_CLOSING_TAG = re.compile(r"</(\s*)passage", re.IGNORECASE)
 
 
 class InvalidQuery(Exception):
@@ -41,9 +44,21 @@ class Message:
 
 
 def build_user_message(query: str, hits: Sequence[Hit]) -> str:
-    """Numbered context blocks, so the model can cite them as [n], then the question."""
-    blocks = "\n\n".join(f"[{n}] ({hit.filename})\n{hit.text}" for n, hit in enumerate(hits, start=1))
+    """Numbered passages, so the model can cite them as [n], then the question.
+
+    Filenames and chunk text are untrusted document content: the filename loses quotes and line
+    breaks, and a closing tag inside the text is broken, so a document cannot fake the end of its
+    passage or a new one. This limits prompt injection; the system prompt also says the context
+    is not instructions."""
+    blocks = "\n\n".join(
+        f'<passage n="{n}" file="{_attribute(hit.filename)}">\n{_CLOSING_TAG.sub("< /passage", hit.text)}\n</passage>'
+        for n, hit in enumerate(hits, start=1)
+    )
     return f"Context:\n\n{blocks}\n\nQuestion: {query}"
+
+
+def _attribute(value: str) -> str:
+    return " ".join(value.replace('"', " ").split())
 
 
 class QueryService:

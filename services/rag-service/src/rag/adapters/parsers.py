@@ -9,11 +9,11 @@ from __future__ import annotations
 
 import io
 import logging
-import os
 
 from pypdf import PdfReader
 
 from rag.ingest.errors import PermanentError
+from rag.ports import Parser, extension
 from rag.transport.status_event import Reason
 
 logger = logging.getLogger(__name__)
@@ -57,12 +57,7 @@ _PARSERS: dict[str, type[PdfParser] | type[TextParser]] = {
 }
 
 
-def extension(filename: str) -> str:
-    """The lowercase extension: ".PDF" -> ".pdf"; "notes" and ".pdf" (a dotfile) -> ""."""
-    return os.path.splitext(filename)[1].lower()
-
-
-def parser_for(filename: str) -> PdfParser | TextParser:
+def parser_for(filename: str) -> Parser:
     """The parser for the filename's extension (case-insensitive). Anything else is a permanent
     UNSUPPORTED_TYPE: the Python service is authoritative on supported types (PRD L10)."""
     ext = extension(filename)

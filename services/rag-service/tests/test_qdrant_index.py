@@ -50,7 +50,7 @@ class FakeClient:
 
 
 def index(client, batch=2):
-    return QdrantIndex(client, collection="c", batch_size=batch)
+    return QdrantIndex(client, collection="c", upsert_batch=batch)
 
 
 def test_point_ids_are_uuid5_of_hash_and_index():
@@ -137,7 +137,7 @@ def real_index():
     client.create_collection(name, vectors_config=models.VectorParams(size=2, distance=models.Distance.COSINE))
     client.create_payload_index(name, "hash", models.PayloadSchemaType.KEYWORD, wait=True)
     try:
-        yield QdrantIndex(client, collection=name, batch_size=2)
+        yield QdrantIndex(client, collection=name, upsert_batch=2)
     finally:
         client.delete_collection(name)
 

@@ -80,7 +80,9 @@ class RagEngineServicer(rag_pb2_grpc.RagEngineServiceServicer):
 
 def serve(service: QueryService, port: int, max_workers: int, host: str = "[::]") -> tuple[grpc.Server, int]:
     """Start the server; returns it and the bound port (port 0 picks a free one)."""
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=max_workers))
+    # Beyond max_workers, new calls fail fast with RESOURCE_EXHAUSTED instead of queueing behind
+    # long Groq streams. The port is plaintext: compose binds it to 127.0.0.1 only.
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=max_workers), maximum_concurrent_rpcs=max_workers)
     rag_pb2_grpc.add_RagEngineServiceServicer_to_server(RagEngineServicer(service), server)
     # Reflection lets grpcurl call the service without the .proto file.
     reflection.enable_server_reflection((SERVICE_NAME, reflection.SERVICE_NAME), server)

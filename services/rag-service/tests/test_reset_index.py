@@ -39,3 +39,13 @@ def test_the_registry_rows_go_before_the_points():
     registry.clear = lambda: order.append("rows")
     reset_index.run(index, registry, collection="pdf-fixed", yes=True)
     assert order == ["rows", "points"]
+
+
+def test_a_missing_collection_still_clears_the_registry(capsys):
+    # After a collection drop (embedding_dim change) the rows would make every re-ingest skip.
+    index, registry = filled()
+    index.exists = False
+    assert reset_index.run(index, registry, collection="pdf-fixed", yes=True) == 0
+    assert registry.count() == 0
+    assert "count" not in index.names() and "clear" not in index.names()
+    assert "does not exist" in capsys.readouterr().out

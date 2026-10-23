@@ -8,8 +8,7 @@ import pytest
 from ollama import ResponseError
 
 from rag.adapters.ollama_embedder import OllamaEmbedder
-from rag.core.startup import StartupError
-from rag.ports import DependencyUnavailable
+from rag.ports import DependencyUnavailable, ModelNotAvailable
 
 INSTRUCTION = "Given a question, retrieve passages that answer it"
 
@@ -80,9 +79,10 @@ def test_a_wrong_number_of_vectors_is_an_error():
         embedder(Short()).embed_documents(["a", "b"])
 
 
-def test_dimension_names_the_pull_command_when_the_model_is_missing():
-    with pytest.raises(StartupError, match=r"ollama pull qwen3-embedding:4b"):
+def test_dimension_reports_a_missing_model():
+    with pytest.raises(ModelNotAvailable) as excinfo:
         embedder(FakeClient(error=ResponseError("model not found", 404))).dimension()
+    assert excinfo.value.model == "qwen3-embedding:4b"
 
 
 def test_dimension_reports_an_unreachable_ollama_as_a_dependency_failure():

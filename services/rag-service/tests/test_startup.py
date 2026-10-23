@@ -25,6 +25,8 @@ def test_a_dimension_mismatch_names_both_sizes_and_the_fix():
     assert excinfo.value.transient is False
     assert "1024" in message and "2560" in message and "qwen3-embedding:4b" in message
     assert "embedding_dim" in message
+    # Without clearing the registry first, every document would be skipped as already indexed.
+    assert message.index("reset_index") < message.index("run_migrations")
 
 
 def test_an_unreachable_embedder_is_a_startup_error_naming_the_service():
@@ -33,6 +35,16 @@ def test_an_unreachable_embedder_is_a_startup_error_naming_the_service():
     with pytest.raises(StartupError, match="ollama") as excinfo:
         check_embedding_dim(embedder, expected=4, model="m")
     assert excinfo.value.transient is True
+
+
+def test_a_missing_model_names_the_pull_command():
+    from rag.ports import ModelNotAvailable
+
+    embedder = FakeEmbedder()
+    embedder.error = ModelNotAvailable("qwen3-embedding:4b")
+    with pytest.raises(StartupError, match=r"ollama pull qwen3-embedding:4b") as excinfo:
+        check_embedding_dim(embedder, expected=4, model="qwen3-embedding:4b")
+    assert excinfo.value.transient is False
 
 
 def test_an_existing_collection_passes():

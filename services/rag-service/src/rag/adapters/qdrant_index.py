@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 import httpx
 from qdrant_client import QdrantClient, models
@@ -19,6 +19,8 @@ NAMESPACE = uuid.UUID("6f1c2b5e-3d0a-4c2e-9b7a-1f4e8d2c6a90")
 
 _SERVICE = "qdrant"
 _HASH = "hash"
+# Points per upsert request: independent of how many chunks one Ollama call embeds.
+DEFAULT_UPSERT_BATCH = 64
 
 
 def point_id(hash: str, chunk_index: int) -> str:
@@ -27,10 +29,10 @@ def point_id(hash: str, chunk_index: int) -> str:
 
 
 class QdrantIndex:
-    def __init__(self, client: QdrantClient, collection: str, batch_size: int) -> None:
+    def __init__(self, client: QdrantClient, collection: str, upsert_batch: int = DEFAULT_UPSERT_BATCH) -> None:
         self._client = client
         self._collection = collection
-        self._batch_size = batch_size
+        self._upsert_batch = upsert_batch
 
     def delete_by_hash(self, hash: str) -> None:
         self._guard(
@@ -42,14 +44,14 @@ class QdrantIndex:
         )
 
     def upsert(self, points: Sequence[Point]) -> None:
-        for start in range(0, len(points), self._batch_size):
+        for start in range(0, len(points), self._upsert_batch):
             batch = [
                 models.PointStruct(
                     id=point_id(p.hash, p.chunk_index),
                     vector=p.vector,
                     payload={"hash": p.hash, "filename": p.filename, "chunk_index": p.chunk_index, "text": p.text},
                 )
-                for p in points[start : start + self._batch_size]
+                for p in points[start : start + self._upsert_batch]
             ]
             self._guard(lambda batch=batch: self._client.upsert(collection_name=self._collection, points=batch, wait=True))
 
@@ -92,7 +94,7 @@ class QdrantIndex:
         )
 
     @staticmethod
-    def _guard(call):
+    def _guard[T](call: Callable[[], T]) -> T:
         try:
             return call()
         except (ApiException, httpx.HTTPError, OSError) as exc:

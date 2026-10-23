@@ -9,6 +9,10 @@
 3. Retrieves top_k for every question with min_score 0, so every score is visible.
 4. Writes evals/results/<UTC date>-<chunk_size>-<overlap>-k<top_k>.md and prints a summary.
 
+Already indexed files are skipped, so after changing chunk_size or chunk_overlap run
+`make reset_index ARGS=--yes` first: otherwise the report carries the new values but measures the
+old chunks.
+
 Exit codes: 0 every document at or above the bar, 1 a document below it, 2 setup problem.
 """
 
@@ -197,7 +201,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.check_only:
         return EXIT_PASS
 
-    config = config_reader.load(args.config)
+    try:
+        config = config_reader.load(args.config)
+    except config_reader.ConfigError as exc:
+        print(exc, file=sys.stderr)
+        return EXIT_SETUP
     failures = ingest_corpus(config, corpus_files(args.corpus))
     if failures:
         print("ingest failed for:", ", ".join(failures), file=sys.stderr)

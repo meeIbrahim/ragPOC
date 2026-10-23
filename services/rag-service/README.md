@@ -66,10 +66,11 @@ make reset_index ARGS=--yes       # deletes every point and indexed_documents ro
 
 `reset_index` acts on whatever the config points at. Never point it at shared data.
 
-Changing `[rag].embedding_model` to one with a different output size means you must also:
+Changing `[rag].embedding_model` to one with a different output size means you must also, in this order:
 1. Set `embedding_dim` to the new size.
-2. Drop the Qdrant collection.
-3. Run `make run_migrations` again.
+2. Run `make reset_index ARGS=--yes`. Otherwise the `indexed_documents` rows make every document skip re-ingest, and the new collection stays empty with no error. It also clears the rows if the collection is already gone.
+3. Drop the Qdrant collection.
+4. Run `make run_migrations` again, then re-ingest.
 
 The consumer and the server both refuse to start on a size mismatch.
 
