@@ -100,8 +100,7 @@ def keep_pytest_log_capture(monkeypatch):
 
 
 def test_main_returns_1_and_names_the_qdrant_url_on_failure(rag_config, monkeypatch, caplog, keep_pytest_log_capture):
-    monkeypatch.setattr(migration_main, "CreateSqLiteTables", Boom)
-    monkeypatch.setattr(migration_main, "QdrantCollection", Boom)
+    monkeypatch.setattr(migration_main, "MIGRATIONS", [Boom, Boom, Boom])
     with caplog.at_level(logging.ERROR):
         code = migration_main.main()
     assert code == 1
@@ -115,14 +114,12 @@ def test_main_returns_0_when_every_migration_passes(rag_config, monkeypatch, kee
         def run(self):
             pass
 
-    monkeypatch.setattr(migration_main, "CreateSqLiteTables", Ok)
-    monkeypatch.setattr(migration_main, "QdrantCollection", Ok)
+    monkeypatch.setattr(migration_main, "MIGRATIONS", [Ok, Ok, Ok])
     assert migration_main.main() == 0
 
 
 def test_the_traceback_is_logged_once(rag_config, monkeypatch, caplog, keep_pytest_log_capture):
-    monkeypatch.setattr(migration_main, "CreateSqLiteTables", Boom)
-    monkeypatch.setattr(migration_main, "QdrantCollection", Boom)
+    monkeypatch.setattr(migration_main, "MIGRATIONS", [Boom, Boom, Boom])
     with caplog.at_level(logging.ERROR):
         migration_main.main()
     assert caplog.text.count("Traceback") == 1

@@ -70,3 +70,55 @@ def test_never_calls_ollama():
 
     source = open(module.__file__).read()
     assert "ollama" not in source.lower()
+
+
+# ---- R3: the keyword payload index on `hash` (filter and delete-by-hash)
+
+class FakeIndexedQdrant:
+    def __init__(self, payload_schema=None):
+        self.payload_schema = payload_schema or {}
+        self.indexes = []
+
+    def get_collection(self, name):
+        return SimpleNamespace(payload_schema=self.payload_schema)
+
+    def create_payload_index(self, **kwargs):
+        self.indexes.append(kwargs)
+
+
+def test_creates_a_keyword_index_on_hash(rag_config):
+    from qdrant_client.models import PayloadSchemaType
+
+    from migration.qdrant_payload_index_v2 import QdrantPayloadIndex
+
+    client = FakeIndexedQdrant()
+    QdrantPayloadIndex(client).run()
+    assert len(client.indexes) == 1
+    index = client.indexes[0]
+    assert index["collection_name"] == "pdf-fixed"
+    assert index["field_name"] == "hash"
+    assert index["field_schema"] == PayloadSchemaType.KEYWORD
+    assert index["wait"] is True
+
+
+def test_leaves_an_existing_hash_index_alone(rag_config):
+    from migration.qdrant_payload_index_v2 import QdrantPayloadIndex
+
+    client = FakeIndexedQdrant(payload_schema={"hash": SimpleNamespace(data_type="keyword")})
+    QdrantPayloadIndex(client).run()
+    assert client.indexes == []
+
+
+def test_refuses_a_hash_index_of_another_type(rag_config):
+    from migration.qdrant_payload_index_v2 import QdrantPayloadIndex
+
+    client = FakeIndexedQdrant(payload_schema={"hash": SimpleNamespace(data_type="text")})
+    with pytest.raises(RuntimeError, match="keyword"):
+        QdrantPayloadIndex(client).run()
+
+
+def test_main_runs_the_index_after_the_collection():
+    from migration.main import MIGRATIONS
+    from migration.qdrant_payload_index_v2 import QdrantPayloadIndex
+
+    assert MIGRATIONS.index(QdrantCollection) < MIGRATIONS.index(QdrantPayloadIndex)

@@ -1,13 +1,19 @@
 .PHONY: grpc-generate run_migrations run_worker test e2e up stack down go_migrate go_migrate_down
 
 # gRPC
+# The proto's own directory is the include root: with -I./protos, protoc writes
+# `from rag.v1 import rag_pb2`, which resolves to this service's `rag` package and fails. The
+# sed turns the bare `import rag_pb2` into an import from the `generated` package.
 grpc-generate:
-	uv run python -m grpc_tools.protoc \
-		-I./protos \
-		--python_out=./services/rag-service/src/generated \
-		--pyi_out=./services/rag-service/src/generated \
-		--grpc_python_out=./services/rag-service/src/generated \
-		./protos/rag/v1/rag.proto
+	cd services/rag-service && uv run python -m grpc_tools.protoc \
+		-I../../protos/rag/v1 \
+		--python_out=src/generated \
+		--pyi_out=src/generated \
+		--grpc_python_out=src/generated \
+		../../protos/rag/v1/rag.proto
+	sed -i.bak 's/^import rag_pb2 as rag__pb2$$/from generated import rag_pb2 as rag__pb2/' \
+		services/rag-service/src/generated/rag_pb2_grpc.py
+	rm services/rag-service/src/generated/rag_pb2_grpc.py.bak
 
 # Needs Qdrant (`make up`); needs no Ollama and leaves the stack running. MinIO buckets are
 # created by `make go_migrate`.

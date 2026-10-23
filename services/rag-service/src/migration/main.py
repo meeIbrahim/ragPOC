@@ -1,10 +1,19 @@
 import logging
 
 from migration.qdrant_collection_v1 import QdrantCollection
+from migration.qdrant_payload_index_v2 import QdrantPayloadIndex
 from migration.sqlite_create_table_v1 import CreateSqLiteTables
 from rag.core import config_reader, logging_setup, qdrant_manager
 
 logger = logging.getLogger(__name__)
+
+# In order: the payload index needs the collection. The MinIO buckets are created by the Go
+# service (`make go_migrate`), not here.
+MIGRATIONS = [
+    CreateSqLiteTables,
+    QdrantCollection,
+    QdrantPayloadIndex,
+]
 
 
 def run_migrations(migration):
@@ -36,13 +45,8 @@ def main() -> int:
         return 1
     config_reader.warn_unknown_keys(config, logger)
 
-    # The MinIO buckets are created by the Go service (`make go_migrate`), not here.
-    migrations = [
-        CreateSqLiteTables,
-        QdrantCollection,
-    ]
     try:
-        for migration in migrations:
+        for migration in MIGRATIONS:
             run_migrations(migration)
     except Exception:
         # run_migrations already logged the traceback; this line adds where it was pointed.

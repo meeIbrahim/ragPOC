@@ -9,13 +9,9 @@ wheels/
 # Virtual environments
 .venv
 
-# Ignore gRPC generated files
-**/generated/*_pb2.py
-**/generated/*_pb2.pyi
-**/generated/*_pb2_grpc.py
-**/generated/**/*_pb2.py
-**/generated/**/*_pb2.pyi
-**/generated/**/*_pb2_grpc.py
+# gRPC generated files are committed, not ignored: the Python stubs in
+# services/rag-service/src/generated are needed by pytest and the rag image, whose build context
+# cannot reach protos/. `make grpc-generate` rewrites them.
 
 # Docs and Local DB
 doc/
