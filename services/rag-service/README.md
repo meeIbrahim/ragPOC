@@ -53,6 +53,12 @@ grpcurl -plaintext -d '{"query": "What is X?", "document_ids": ["<hash>"]}' \
 
 If nothing passes `[rag].min_score`, the answer is a fixed "No relevant information..." text and Groq is not called.
 
+Status codes:
+- `INVALID_ARGUMENT`: an empty query, a query over `max_query_chars`, or more than `max_document_ids` ids.
+- `UNAVAILABLE`: Ollama, Qdrant or Groq failed.
+- `RESOURCE_EXHAUSTED`: more than `[rag_grpc].max_workers` calls are already running. The server rejects the extra call instead of queueing it, and the Phase 3 Go proxy must map this code too.
+- `INTERNAL`: anything else, with a generic message.
+
 To run the whole stack in containers, use `make stack` (`rag-consumer` and `rag-server` are included). Ollama stays on the host; the containers reach it at `host.docker.internal:11434`.
 
 ## Re-indexing

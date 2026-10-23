@@ -65,3 +65,23 @@ def test_an_overlap_between_negatives_and_correct_hits_is_reported():
     negatives = [Result(Question("n1", "q", "", None), None, None, 0.9)]
     text, _ = run_eval.report(CONFIG, results("a.md", 10, 10), negatives)
     assert "OVERLAP" in text
+
+
+def test_an_unreadable_question_file_is_a_setup_error(tmp_path):
+    bad = tmp_path / "q.jsonl"
+    bad.write_text('{"id": "q1"}\n')  # no question, file or hash
+    assert run_eval.main(["--questions", str(bad), "--negatives", str(tmp_path / "none.jsonl"), "--check-only"]) == 2
+
+
+def test_an_outage_during_the_run_is_a_setup_error_not_below_bar(corpus, monkeypatch):
+    path, digest = corpus
+    questions = tmp = path / "q.jsonl"
+    tmp.write_text('{"id": "q1", "question": "On which weekday?", "file": "keeper.txt", "expected_hash": "%s"}\n' % digest)
+    monkeypatch.setattr(run_eval.config_reader, "load", lambda path: object())
+
+    def down(config, files):
+        raise run_eval.DependencyUnavailable("qdrant", "ConnectError")
+
+    monkeypatch.setattr(run_eval, "ingest_corpus", down)
+    assert run_eval.main(["--corpus", str(path), "--questions", str(questions),
+                          "--negatives", str(path / "none.jsonl")]) == 2

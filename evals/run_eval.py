@@ -32,6 +32,8 @@ from rag.adapters.parsers import parser_for
 from rag.core import config_reader, wiring
 from rag.core.config_reader import Config
 from rag.ingest.errors import IngestError
+from rag.ports import DependencyUnavailable
+from rag.query.service import QueryUnavailable
 from rag.tools import ingest_file
 
 EVALS = Path(__file__).resolve().parent
@@ -191,8 +193,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--check-only", action="store_true", help="only validate the questions (leakage gate)")
     args = parser.parse_args(argv)
 
-    questions = _load(args.questions, negatives=False)
-    negatives = _load(args.negatives, negatives=True) if args.negatives.exists() else []
+    try:
+        questions = _load(args.questions, negatives=False)
+        negatives = _load(args.negatives, negatives=True) if args.negatives.exists() else []
+    except (OSError, ValueError, KeyError) as exc:
+        print(f"cannot read the question files: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return EXIT_SETUP
     problems = check_questions(questions, args.corpus)
     if problems:
         print("question set rejected:", *problems, sep="\n  ", file=sys.stderr)
@@ -206,12 +212,16 @@ def main(argv: list[str] | None = None) -> int:
     except config_reader.ConfigError as exc:
         print(exc, file=sys.stderr)
         return EXIT_SETUP
-    failures = ingest_corpus(config, corpus_files(args.corpus))
-    if failures:
-        print("ingest failed for:", ", ".join(failures), file=sys.stderr)
+    try:
+        failures = ingest_corpus(config, corpus_files(args.corpus))
+        if failures:
+            print("ingest failed for:", ", ".join(failures), file=sys.stderr)
+            return EXIT_SETUP
+        results, negative_results = evaluate(config, questions, negatives)
+    except (DependencyUnavailable, QueryUnavailable) as exc:
+        # Exit 1 means "a document is below the bar"; an outage is a setup problem.
+        print(f"eval could not run: {exc}", file=sys.stderr)
         return EXIT_SETUP
-
-    results, negative_results = evaluate(config, questions, negatives)
     text, passed = report(config, results, negative_results)
     args.results.mkdir(parents=True, exist_ok=True)
     out = args.results / (f"{datetime.now(UTC):%Y%m%dT%H%M}-{config.rag.chunk_size}-"

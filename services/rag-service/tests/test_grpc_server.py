@@ -139,6 +139,23 @@ def test_a_cancelled_stream_is_logged(make_stub, caplog):
     assert "stream ended early" in caplog.text
 
 
+def test_calls_beyond_max_workers_are_rejected_not_queued():
+    llm = SlowLLM()
+    index = FakeIndex((HIT,))
+    service = QueryService(FakeEmbedder(), index, llm, SETTINGS)
+    server, port = serve(service, port=0, max_workers=1, host="127.0.0.1")
+    try:
+        stub = rag_pb2_grpc.RagEngineServiceStub(grpc.insecure_channel(f"127.0.0.1:{port}"))
+        busy = stub.AskStream(rag_pb2.AskStreamRequest(query="What?"), timeout=10)
+        next(busy)  # the only worker is now streaming
+        with pytest.raises(grpc.RpcError) as excinfo:
+            stub.Ask(rag_pb2.AskRequest(query="What?"), timeout=5)
+        assert excinfo.value.code() is grpc.StatusCode.RESOURCE_EXHAUSTED
+        busy.cancel()
+    finally:
+        server.stop(grace=None)
+
+
 def test_reflection_lists_the_service(make_stub):
     _, channel = make_stub()
     stub = reflection_pb2_grpc.ServerReflectionStub(channel)

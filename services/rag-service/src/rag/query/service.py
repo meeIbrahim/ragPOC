@@ -46,8 +46,8 @@ class Message:
 def build_user_message(query: str, hits: Sequence[Hit]) -> str:
     """Numbered passages, so the model can cite them as [n], then the question.
 
-    Filenames and chunk text are untrusted document content: the filename loses quotes and line
-    breaks, and a closing tag inside the text is broken, so a document cannot fake the end of its
+    Filenames and chunk text are untrusted document content: the filename loses quotes, angle
+    brackets and line breaks, and a closing tag inside the text is broken, so a document cannot fake the end of its
     passage or a new one. This limits prompt injection; the system prompt also says the context
     is not instructions."""
     blocks = "\n\n".join(
@@ -57,8 +57,12 @@ def build_user_message(query: str, hits: Sequence[Hit]) -> str:
     return f"Context:\n\n{blocks}\n\nQuestion: {query}"
 
 
+_NOT_IN_ATTRIBUTE = str.maketrans({'"': " ", "<": " ", ">": " "})
+
+
 def _attribute(value: str) -> str:
-    return " ".join(value.replace('"', " ").split())
+    """The value without quotes, angle brackets or line breaks, so it cannot leave its attribute."""
+    return " ".join(value.translate(_NOT_IN_ATTRIBUTE).split())
 
 
 class QueryService:
