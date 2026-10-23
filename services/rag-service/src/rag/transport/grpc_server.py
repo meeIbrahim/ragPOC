@@ -55,21 +55,27 @@ class RagEngineServicer(rag_pb2_grpc.RagEngineServiceServicer):
         self, request: rag_pb2.AskStreamRequest, context: grpc.ServicerContext
     ) -> Iterator[rag_pb2.AskStreamResponse]:
         messages = None
+        finished = False
         try:
             messages = self._service.ask_stream(request.query, list(request.document_ids))
             for message in messages:
                 if not context.is_active():
-                    logger.info("client went away; stopping the answer stream")
-                    return
+                    break
                 yield rag_pb2.AskStreamResponse(
                     answer=message.answer, context_used=[_source(h) for h in message.sources]
                 )
+            else:
+                finished = True
         except Exception as exc:
+            finished = True  # ended by an error status, logged by _abort
             _abort(context, exc)
         finally:
             # Closing the answer generator closes the LLM stream behind it (no more Groq reads).
+            # A client that cancels ends here too: gRPC closes this generator at its next yield.
             if messages is not None:
                 messages.close()
+                if not finished:
+                    logger.info("answer stream ended early: the client went away")
 
 
 def serve(service: QueryService, port: int, max_workers: int, host: str = "[::]") -> tuple[grpc.Server, int]:

@@ -124,6 +124,21 @@ def test_cancelling_the_stream_stops_the_llm_E16(make_stub):
     assert llm.yielded < 200
 
 
+def test_a_cancelled_stream_is_logged(make_stub, caplog):
+    llm = SlowLLM()
+    stub, _ = make_stub(llm=llm)
+    with caplog.at_level("INFO", logger="rag.transport.grpc_server"):
+        call = stub.AskStream(rag_pb2.AskStreamRequest(query="What?"), timeout=10)
+        next(call)
+        next(call)
+        call.cancel()
+        assert llm.closed.wait(3)
+        deadline = time.monotonic() + 3
+        while "stream ended early" not in caplog.text and time.monotonic() < deadline:
+            time.sleep(0.05)
+    assert "stream ended early" in caplog.text
+
+
 def test_reflection_lists_the_service(make_stub):
     _, channel = make_stub()
     stub = reflection_pb2_grpc.ServerReflectionStub(channel)
