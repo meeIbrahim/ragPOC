@@ -17,6 +17,8 @@ from rag.core import minio_client, qdrant_manager
 from rag.core.config_reader import Config
 from rag.core.startup import StartupError
 from rag.ingest.service import IngestService, IngestSettings
+from rag.ports import LLM
+from rag.query.service import QueryService, QuerySettings
 
 
 def embedder(config: Config) -> OllamaEmbedder:
@@ -58,5 +60,21 @@ def ingest_service(config: Config) -> IngestService:
             chunk_overlap=config.rag.chunk_overlap,
             embed_batch_size=config.rag.embed_batch_size,
             max_file_bytes=config.rag.consumer.max_file_bytes,
+        ),
+    )
+
+
+def query_service(config: Config, llm_adapter: LLM | None = None) -> QueryService:
+    """llm_adapter defaults to Groq; the retrieval eval passes its own (it never calls the LLM)."""
+    return QueryService(
+        embedder=embedder(config),
+        index=index(config),
+        llm=llm_adapter if llm_adapter is not None else llm(config),
+        settings=QuerySettings(
+            top_k=config.rag.top_k,
+            min_score=config.rag.min_score,
+            max_query_chars=config.rag.max_query_chars,
+            max_document_ids=config.rag.max_document_ids,
+            system_prompt=config.rag.system_prompt,
         ),
     )
