@@ -1,0 +1,69 @@
+# Override for the Phase 1 fault runbook (services/rag-service/docs/phase1-faults.md), run as
+# its own compose project so it never touches the dev stack or the e2e:
+#
+#   docker compose -p ragpoc-p1faults -f docker-compose.yml -f docker-compose.faults.yml --profile app ...
+#
+# - MinIO and Qdrant keep their data in named volumes (`down -v` wipes exactly this project).
+# - No ports are published, so it runs next to the dev stack.
+# - rag-consumer reads $FAULTS_CONFIG (default deploy/config.faults.toml); the blackhole
+#   scenario switches it to deploy/config.faults-blackhole.toml and sets RAG_SKIP_DIM_CHECK=1.
+
+services:
+  minio:
+    ports: !reset []
+    volumes:
+      - minio_faults:/data
+
+  qdrant:
+    ports: !reset []
+    volumes:
+      - qdrant_faults:/qdrant/storage
+
+  redis:
+    ports: !reset []
+
+  center-migrate:
+    volumes:
+      - ./deploy/config.faults.toml:/config/config.toml:ro
+
+  rag-migrate:
+    volumes:
+      - ./deploy/config.faults.toml:/config/config.toml:ro
+
+  center:
+    ports: !reset []
+    volumes:
+      - ./deploy/config.faults.toml:/config/config.toml:ro
+
+  rag-consumer:
+    environment:
+      RAG_STUB_MODE: ""
+      RAG_SKIP_DIM_CHECK: ${RAG_SKIP_DIM_CHECK:-}
+    volumes:
+      - ${FAULTS_CONFIG:-./deploy/config.faults.toml}:/config/config.toml:ro
+
+  rag-server:
+    ports: !reset []
+    volumes:
+      - ./deploy/config.faults.toml:/config/config.toml:ro
+
+  # Accepts TCP connections on the Ollama port and never answers, so an embedding call hangs
+  # until call_timeout (60s), long after the watchdog (5s) has ended the job.
+  blackhole:
+    profiles: ["app"]
+    image: python:3.13-slim
+    command:
+      - python
+      - -c
+      - |
+        import socket, time
+        server = socket.create_server(("0.0.0.0", 11434))
+        held = []
+        while True:
+            conn, _ = server.accept()
+            held.append(conn)  # keep it open, never read or reply
+    restart: "no"
+
+volumes:
+  minio_faults:
+  qdrant_faults:
