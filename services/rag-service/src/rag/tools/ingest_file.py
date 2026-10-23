@@ -121,6 +121,20 @@ def run(path: Path, config: Config, minio: Minio, redis_client: redis.Redis, wai
         return EXIT_USAGE
 
 
+def connect(config: Config) -> tuple[Minio, redis.Redis]:
+    """The MinIO and Redis clients run() needs. Creating them makes no request."""
+    timeout = config.rag.call_timeout.total_seconds()
+    client = redis.Redis(
+        host=config.redis.host,
+        port=config.redis.port,
+        decode_responses=True,
+        protocol=2,  # the list-shaped XREAD replies _wait() reads
+        socket_timeout=timeout + _POLL_MS / 1000,  # outlasts one XREAD block
+        socket_connect_timeout=timeout,
+    )
+    return minio_client.build_client(config), client
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m rag.tools.ingest_file", description=__doc__.splitlines()[0])
     parser.add_argument("path", type=Path)
@@ -132,16 +146,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     except config_reader.ConfigError as exc:
         print(exc, file=sys.stderr)
         return EXIT_USAGE
-    timeout = config.rag.call_timeout.total_seconds()
-    client = redis.Redis(
-        host=config.redis.host,
-        port=config.redis.port,
-        decode_responses=True,
-        protocol=2,
-        socket_timeout=timeout + _POLL_MS / 1000,
-        socket_connect_timeout=timeout,
-    )
-    return run(args.path, config, minio_client.build_client(config), client, args.wait)
+    minio, client = connect(config)
+    return run(args.path, config, minio, client, args.wait)
 
 
 if __name__ == "__main__":

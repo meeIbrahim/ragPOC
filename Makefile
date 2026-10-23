@@ -1,4 +1,4 @@
-.PHONY: grpc-generate run_migrations run_worker test e2e up stack down go_migrate go_migrate_down
+.PHONY: grpc-generate run_migrations run_worker run_server reset_index eval test e2e up stack down go_migrate go_migrate_down
 
 # gRPC
 # The proto's own directory is the include root: with -I./protos, protoc writes
@@ -20,8 +20,22 @@ grpc-generate:
 run_migrations:
 	cd services/rag-service && uv run python -m migration.main
 
+# The real ingest consumer (needs Ollama with [rag].embedding_model pulled). For the Phase 0 stub:
+# `make run_worker ARGS="--mode indexed"`.
 run_worker:
-	cd services/rag-service && uv run python -m rag.consumer
+	cd services/rag-service && uv run python -m rag.consumer $(ARGS)
+
+# The gRPC query server on [rag_grpc].port; needs GROQ_API_KEY in the environment.
+run_server:
+	cd services/rag-service && uv run python -m rag.server $(ARGS)
+
+# Deletes every indexed point and indexed_documents row (dev only). Dry run unless ARGS=--yes.
+reset_index:
+	cd services/rag-service && uv run python -m rag.tools.reset_index $(ARGS)
+
+# Retrieval eval: ingests evals/corpus (needs run_worker) and reports hit@k; no Groq calls.
+eval:
+	cd services/rag-service && uv run python ../../evals/run_eval.py $(ARGS)
 
 test:
 	cd services/center && go test -race ./...
