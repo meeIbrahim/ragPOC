@@ -31,8 +31,9 @@ llm_model="openai/gpt-oss-120b"
 top_k=5
 chunk_size=1000
 chunk_overlap=150
-# Qdrant score_threshold for retrieval; 0.0 = none. Set from the retrieval eval.
-min_score=0.0
+# Qdrant score_threshold for retrieval; 0.0 = none. From the eval (evals/results/20261023T0902-1000-150-k5.md):
+# off-topic questions topped at 0.331, correct hits started at 0.433.
+min_score=0.38
 # Chunks per Ollama call; the job deadline is checked between batches.
 embed_batch_size=16
 # Prefix for query embeddings only (Qwen3-Embedding instruction format); documents get none.
