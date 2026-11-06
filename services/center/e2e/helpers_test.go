@@ -67,43 +67,66 @@ func centerURL() string { return getenv("CENTER_URL", "http://center:8080") }
 // (which points at the MinIO service, reachable from inside the compose network), confirm.
 func upload(t *testing.T, filename string, content []byte) string {
 	t.Helper()
+	id, uploadURL, err := createIntent(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := putBytes(uploadURL, content); err != nil {
+		t.Fatal(err)
+	}
+	if err := confirmUpload(id); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+// The steps of upload return errors instead of failing the test, so a scenario can run them
+// from its own goroutines.
+
+func createIntent(filename string) (id, uploadURL string, err error) {
 	body, _ := json.Marshal(map[string]string{"filename": filename})
 	resp, err := httpClient.Post(centerURL()+"/upload", "application/json", bytes.NewReader(body))
 	if err != nil {
-		t.Fatalf("POST /upload: %v", err)
+		return "", "", fmt.Errorf("POST /upload: %w", err)
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("POST /upload = %d: %s", resp.StatusCode, raw)
+		return "", "", fmt.Errorf("POST /upload = %d: %s", resp.StatusCode, raw)
 	}
 	var created struct {
 		ID        string `json:"id"`
 		UploadURL string `json:"upload_url"`
 	}
 	if err := json.Unmarshal(raw, &created); err != nil {
-		t.Fatalf("decode create response: %v (%s)", err, raw)
+		return "", "", fmt.Errorf("decode create response: %w (%s)", err, raw)
 	}
+	return created.ID, created.UploadURL, nil
+}
 
-	req, _ := http.NewRequest(http.MethodPut, created.UploadURL, bytes.NewReader(content))
-	putResp, err := httpClient.Do(req)
+func putBytes(uploadURL string, content []byte) error {
+	req, _ := http.NewRequest(http.MethodPut, uploadURL, bytes.NewReader(content))
+	resp, err := httpClient.Do(req)
 	if err != nil {
-		t.Fatalf("PUT to presigned URL %s: %v", created.UploadURL, err)
+		return fmt.Errorf("PUT to presigned URL %s: %w", uploadURL, err)
 	}
-	putResp.Body.Close()
-	if putResp.StatusCode != http.StatusOK {
-		t.Fatalf("PUT to presigned URL = %d", putResp.StatusCode)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("PUT to presigned URL = %d", resp.StatusCode)
 	}
+	return nil
+}
 
-	confirm, err := httpClient.Post(centerURL()+"/upload/"+created.ID+"/confirm", "application/json", nil)
+func confirmUpload(id string) error {
+	resp, err := httpClient.Post(centerURL()+"/upload/"+id+"/confirm", "application/json", nil)
 	if err != nil {
-		t.Fatalf("confirm: %v", err)
+		return fmt.Errorf("confirm %s: %w", id, err)
 	}
-	confirm.Body.Close()
-	if confirm.StatusCode != http.StatusAccepted {
-		t.Fatalf("confirm = %d, want 202", confirm.StatusCode)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		return fmt.Errorf("confirm %s = %d, want 202", id, resp.StatusCode)
 	}
-	return created.ID
+	return nil
 }
 
 // uniqueContent makes bytes no earlier scenario used, so every scenario gets its own document
@@ -186,6 +209,44 @@ func hashOf(t *testing.T, db *sql.DB, uploadID string) string {
 		t.Fatalf("upload %s was never hashed", uploadID)
 	}
 	return hash
+}
+
+// intentByFilename finds the upload a previous step of the same scenario created. Fault
+// scenarios run as separate arrange and verify processes, so the filename (which carries the
+// run id) is how verify finds arrange's upload.
+func intentByFilename(t *testing.T, db *sql.DB, filename string) string {
+	t.Helper()
+	var id string
+	if err := db.QueryRow(`SELECT uuid FROM upload_intent WHERE file_name = ?`, filename).Scan(&id); err != nil {
+		t.Fatalf("no upload named %s: %v (did the arrange step run in this e2e run?)", filename, err)
+	}
+	return id
+}
+
+type intentState struct {
+	Status    string
+	Retries   int
+	ClaimedAt sql.NullTime
+}
+
+func readIntent(db *sql.DB, id string) (intentState, error) {
+	var i intentState
+	err := db.QueryRow(`SELECT status, retries, claimed_at FROM upload_intent WHERE uuid = ?`, id).Scan(&i.Status, &i.Retries, &i.ClaimedAt)
+	return i, err
+}
+
+// outboxState is the newest outbox row for a hash; the fault scenarios create exactly one.
+type outboxState struct {
+	Status    string
+	Retries   int
+	ClaimedAt sql.NullTime
+}
+
+func readOutbox(db *sql.DB, hash string) (outboxState, error) {
+	var o outboxState
+	err := db.QueryRow(`SELECT status, retries, claimed_at FROM outbox WHERE hash = ? ORDER BY id DESC LIMIT 1`, hash).
+		Scan(&o.Status, &o.Retries, &o.ClaimedAt)
+	return o, err
 }
 
 type docRow struct {
@@ -402,6 +463,15 @@ func newScenario(t *testing.T) *scenario {
 	return s
 }
 
+// newDBScenario is newScenario for a step that runs while Redis is stopped: it never dials
+// Redis, and its failure report shows only the database.
+func newDBScenario(t *testing.T) *scenario {
+	t.Helper()
+	s := &scenario{t: t, db: openDB(t)}
+	t.Cleanup(s.dumpOnFailure)
+	return s
+}
+
 func (s *scenario) track(hash string) string {
 	s.hashes = append(s.hashes, hash)
 	return hash
@@ -427,6 +497,10 @@ func (s *scenario) dumpOnFailure() {
 			}
 			rows.Close()
 		}
+	}
+	if s.rdb == nil {
+		s.t.Logf("---- state at failure (Redis not consulted) ----\n%s", b.String())
+		return
 	}
 	for _, stream := range []string{ingestStream, statusStream} {
 		entries, _ := s.rdb.XRange(ctx, stream, "-", "+").Result()
