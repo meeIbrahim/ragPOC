@@ -39,6 +39,9 @@ type Config struct {
 	MaxRetries       int           // attempts before an intent is marked FAILED
 	RecoveryInterval time.Duration // how often the recovery sweep runs
 	StaleThreshold   time.Duration // a HASHING claim older than this is presumed dead
+	// HangAfterClaim is a fault hook for the e2e (CENTER_FAULT=hash-hang): the worker holds
+	// each claim until shutdown, so a killed process leaves a HASHING intent behind.
+	HangAfterClaim bool
 }
 
 func DefaultConfig() Config {
@@ -130,6 +133,12 @@ func (w *Worker) pass(ctx context.Context) {
 // process runs one claimed intent to an outcome. Every write after the claim is
 // fenced by this worker's ID, so a worker that lost its claim cannot change the row.
 func (w *Worker) process(ctx context.Context, intent *domain.Intent) {
+	if w.cfg.HangAfterClaim {
+		// Wait on the worker's context, not a job context: the claim must outlive JobTimeout.
+		w.logger.Warn("fault hook hash-hang: holding the claim until shutdown", "intent", intent.ID)
+		<-ctx.Done()
+		return
+	}
 	jobCtx, cancel := context.WithTimeout(ctx, w.cfg.JobTimeout)
 	defer cancel()
 
