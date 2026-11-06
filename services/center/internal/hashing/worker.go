@@ -75,10 +75,18 @@ type Worker struct {
 	repo    Store
 	storage Blob
 	logger  *slog.Logger
+	now     func() time.Time
 }
 
 func NewWorker(id string, cfg Config, repo Store, storage Blob, logger *slog.Logger) *Worker {
-	return &Worker{id: id, cfg: cfg, repo: repo, storage: storage, logger: logger.With("worker", id)}
+	return &Worker{
+		id:      id,
+		cfg:     cfg,
+		repo:    repo,
+		storage: storage,
+		logger:  logger.With("worker", id),
+		now:     func() time.Time { return time.Now().UTC() },
+	}
 }
 
 // Run polls for work every cfg.Interval until ctx is cancelled.
@@ -106,7 +114,7 @@ func (w *Worker) pass(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		now := time.Now().UTC()
+		now := w.now()
 		n, err := w.repo.UpdateIntentToHashing(ctx, intent.ID, &w.id, &now)
 		if err != nil {
 			w.logger.Error("claim intent failed", "intent", intent.ID, "err", err)
@@ -207,10 +215,16 @@ type Sweeper struct {
 	cfg    Config
 	repo   Store
 	logger *slog.Logger
+	now    func() time.Time
 }
 
 func NewSweeper(cfg Config, repo Store, logger *slog.Logger) *Sweeper {
-	return &Sweeper{cfg: cfg, repo: repo, logger: logger.With("component", "hash-recovery")}
+	return &Sweeper{
+		cfg:    cfg,
+		repo:   repo,
+		logger: logger.With("component", "hash-recovery"),
+		now:    func() time.Time { return time.Now().UTC() },
+	}
 }
 
 // Run sweeps every cfg.RecoveryInterval until ctx is cancelled.
@@ -222,7 +236,7 @@ func (s *Sweeper) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			cutoff := time.Now().UTC().Add(-s.cfg.StaleThreshold)
+			cutoff := s.now().Add(-s.cfg.StaleThreshold)
 			n, err := s.repo.RecoverStaleIntents(ctx, cutoff, s.cfg.MaxRetries)
 			if err != nil {
 				s.logger.Error("recover stale intents failed", "err", err)

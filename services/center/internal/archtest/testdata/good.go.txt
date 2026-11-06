@@ -1,0 +1,19 @@
+package good
+
+import "time"
+
+type worker struct{ now func() time.Time }
+
+func newWorker() *worker {
+	return &worker{now: func() time.Time { return time.Now().UTC() }}
+}
+
+func newOther() *worker {
+	return &worker{now: time.Now}
+}
+
+func (w *worker) reset() {
+	w.now = time.Now
+}
+
+func (w *worker) stamp() time.Time { return w.now() }

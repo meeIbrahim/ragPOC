@@ -1,0 +1,15 @@
+package bad
+
+import "time"
+
+type worker struct {
+	now   func() time.Time
+	clock func() time.Time
+}
+
+func run(w *worker, start time.Time) {
+	_ = time.Now()            // violation 1: a bare clock read
+	_ = time.Since(start)     // violation 2: Since reads the clock too
+	w.clock = time.Now        // violation 3: a field not named now
+	_ = worker{clock: time.Now} // violation 4: a key not named now
+}

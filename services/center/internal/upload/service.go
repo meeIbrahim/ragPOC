@@ -32,15 +32,16 @@ type Service struct {
 	repo    Store
 	storage Blob
 	logger  *slog.Logger
+	now     func() time.Time
 }
 
 func NewService(repo Store, storage Blob, logger *slog.Logger) *Service {
-	return &Service{repo: repo, storage: storage, logger: logger}
+	return &Service{repo: repo, storage: storage, logger: logger, now: func() time.Time { return time.Now().UTC() }}
 }
 
 func (s *Service) CreateIntent(ctx context.Context, fileName string) (*domain.Intent, *url.URL, error) {
 	expirationDuration := 2 * time.Hour
-	now := time.Now().UTC()
+	now := s.now()
 	id := uuid.NewString()
 	objectPath := id
 
@@ -80,7 +81,7 @@ var ErrIntentNotFound = domain.ErrIntentNotFound
 var ErrIntentUnknown = errors.New("upload intent in unknown state")
 
 func (s *Service) ConfirmUpload(ctx context.Context, id string) (*domain.Intent, error) {
-	now := time.Now().UTC()
+	now := s.now()
 	rows, err := s.repo.UpdateIntentToUploaded(ctx, id, &now)
 	if err != nil {
 		return nil, fmt.Errorf("update upload_intent to uploaded: %w", err)
@@ -139,7 +140,7 @@ func (s *Service) GetUploadStatus(ctx context.Context, id string) (*domain.Inten
 		return nil, nil, fmt.Errorf("get upload_intent: %w", err)
 	}
 	var status string
-	now := time.Now().UTC()
+	now := s.now()
 	if intent.Status == domain.IntentWaiting && now.After(intent.ExpiresAt) {
 		status = domain.IntentExpired.String()
 	} else if intent.Hash != nil {

@@ -12,7 +12,8 @@ type Store struct {
 	*IntentStore
 	*DocumentStore
 	*OutboxStore
-	db *sql.DB
+	db  *sql.DB
+	now func() time.Time
 }
 
 func NewStore(db *sql.DB) *Store {
@@ -21,6 +22,7 @@ func NewStore(db *sql.DB) *Store {
 		DocumentStore: NewDocumentStore(db),
 		OutboxStore:   NewOutboxStore(db),
 		db:            db,
+		now:           func() time.Time { return time.Now().UTC() },
 	}
 }
 
@@ -35,7 +37,7 @@ func (s *Store) StartIngestion(ctx context.Context, document *domain.Document, i
 	}
 	defer tx.Rollback()
 
-	now := time.Now().UTC()
+	now := s.now()
 
 	res, err := tx.ExecContext(ctx,
 		`INSERT INTO document_store (hash, perm_bucket_path, file_name, size, status, retries, created_at, updated_at)
