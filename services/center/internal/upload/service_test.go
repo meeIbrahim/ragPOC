@@ -264,6 +264,18 @@ func TestGetUploadStatusErrors(t *testing.T) {
 			t.Errorf("err = %v; want the document read failure", err)
 		}
 	})
+	// The FK makes this unreachable short of corruption; if it happens, the poll must say so
+	// instead of answering 200 with an empty status.
+	t.Run("hash set but document missing", func(t *testing.T) {
+		store := newFakeStore()
+		i := waiting("i1", now.Add(time.Hour))
+		i.Status, i.Hash = domain.IntentHashed, ptr(docHash)
+		store.put(i)
+		_, status, err := newTestService(store, &fakeBlob{}).GetUploadStatus(context.Background(), "i1")
+		if err == nil {
+			t.Errorf("status = %q, err = nil; want an error naming the missing document %s", deref(status), docHash)
+		}
+	})
 }
 
 func ptr[T any](v T) *T { return &v }

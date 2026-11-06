@@ -150,9 +150,11 @@ func (s *Service) GetUploadStatus(ctx context.Context, id string) (*domain.Inten
 		if err != nil {
 			return nil, nil, fmt.Errorf("get document: %w", err)
 		}
-		if document != nil {
-			status = string(document.Status)
+		if document == nil {
+			// The FK makes this unreachable short of corruption; never answer it with an empty status.
+			return nil, nil, fmt.Errorf("upload_intent %s links to missing document %s", id, *intent.Hash)
 		}
+		status = string(document.Status)
 	} else if intent.Status == domain.IntentHashed || intent.Status == domain.IntentHashing {
 		status = string(domain.DocumentProcessing)
 	} else if intent.Status == domain.IntentUnknown {
