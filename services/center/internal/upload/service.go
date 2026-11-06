@@ -141,7 +141,9 @@ func (s *Service) GetUploadStatus(ctx context.Context, id string) (*domain.Inten
 	}
 	var status string
 	now := s.now()
-	if intent.Status == domain.IntentWaiting && now.After(intent.ExpiresAt) {
+	// At or past expires_at, matching the confirm gate (expires_at > now), so the poll never
+	// says WAITING for an upload the gate would refuse.
+	if intent.Status == domain.IntentWaiting && !now.Before(intent.ExpiresAt) {
 		status = domain.IntentExpired.String()
 	} else if intent.Hash != nil {
 		document, err := s.GetDocument(ctx, *intent.Hash)
