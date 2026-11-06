@@ -67,6 +67,23 @@ min_idle="60s"
 recovery_interval="30s"
 poison_threshold=3
 consumer_cleanup_idle="1h"
+
+[go.hashing]
+interval="2s"
+batch_size=20
+job_timeout="2m"
+max_retries=3
+recovery_interval="31s"
+stale_threshold="5m"
+
+[go.outbox]
+interval="5s"
+batch_size=100
+job_timeout="30s"
+max_retries=4
+recovery_interval="1m"
+stale_threshold="30m"
+schema_version=1
 `
 
 func writeConfig(t *testing.T, body string) string {
@@ -112,6 +129,16 @@ func TestLoadParsesAllSections(t *testing.T) {
 	if s.EntryTimeout.Std() != 5*time.Second || s.MinIdle.Std() != 60*time.Second ||
 		s.RecoveryInterval.Std() != 30*time.Second || s.PoisonThreshold != 3 || s.ConsumerCleanupIdle.Std() != time.Hour {
 		t.Errorf("Go.StatusConsumer = %+v", s)
+	}
+	h := cfg.Go.Hashing
+	if h.Interval.Std() != 2*time.Second || h.BatchSize != 20 || h.JobTimeout.Std() != 2*time.Minute ||
+		h.MaxRetries != 3 || h.RecoveryInterval.Std() != 31*time.Second || h.StaleThreshold.Std() != 5*time.Minute {
+		t.Errorf("Go.Hashing = %+v", h)
+	}
+	o := cfg.Go.Outbox
+	if o.Interval.Std() != 5*time.Second || o.BatchSize != 100 || o.JobTimeout.Std() != 30*time.Second || o.MaxRetries != 4 ||
+		o.RecoveryInterval.Std() != time.Minute || o.StaleThreshold.Std() != 30*time.Minute || o.SchemaVersion != 1 {
+		t.Errorf("Go.Outbox = %+v", o)
 	}
 }
 
@@ -184,6 +211,16 @@ port=50051`, "rag_grpc.port"},
 		{"extension without dot", `allowed_extensions=[".pdf", ".txt", ".md"]`, `allowed_extensions=["pdf"]`, "allowed_extensions"},
 		{"missing status_stream", `status_stream="ingest.status"`, ``, "status_stream"},
 		{"missing status group", `status_consumer_group="center-status"`, ``, "status_consumer_group"},
+		{"hashing interval zero", "[go.hashing]\ninterval=\"2s\"", "[go.hashing]\ninterval=\"0s\"", "go.hashing.interval"},
+		{"hashing batch_size zero", `batch_size=20`, `batch_size=0`, "go.hashing.batch_size"},
+		{"hashing max_retries zero", `max_retries=3`, `max_retries=0`, "go.hashing.max_retries"},
+		{"hashing recovery_interval zero", `recovery_interval="31s"`, `recovery_interval="0s"`, "go.hashing.recovery_interval"},
+		{"hashing job_timeout == stale_threshold", `stale_threshold="5m"`, `stale_threshold="2m"`, "go.hashing.stale_threshold"},
+		{"hashing job_timeout > stale_threshold", `stale_threshold="5m"`, `stale_threshold="1m"`, "go.hashing.stale_threshold"},
+		{"outbox job_timeout zero", `job_timeout="30s"`, `job_timeout="0s"`, "go.outbox.job_timeout"},
+		{"outbox max_retries zero", `max_retries=4`, `max_retries=0`, "go.outbox.max_retries"},
+		{"outbox job_timeout == stale_threshold", `stale_threshold="30m"`, `stale_threshold="30s"`, "go.outbox.stale_threshold"},
+		{"outbox schema_version zero", `schema_version=1`, `schema_version=0`, "go.outbox.schema_version"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -212,6 +249,21 @@ func TestValidateBoundary(t *testing.T) {
 	body = strings.Replace(validTOML, `consumer_cleanup_idle="1h"`, `consumer_cleanup_idle="901s"`, 1)
 	if _, err := Load(writeConfig(t, body)); err != nil {
 		t.Fatalf("cleanup_idle just above job_timeout must be valid: %v", err)
+	}
+}
+
+// A file written before these tables existed would run the workers with zero timings
+// (a zero ticker interval panics), so every key is required.
+func TestLoadRejectsMissingWorkerTables(t *testing.T) {
+	body := validTOML[:strings.Index(validTOML, "[go.hashing]")]
+	_, err := Load(writeConfig(t, body))
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	for _, key := range []string{"go.hashing.interval", "go.hashing.stale_threshold", "go.outbox.batch_size", "go.outbox.schema_version"} {
+		if !strings.Contains(err.Error(), key) {
+			t.Errorf("error %q does not mention %s", err, key)
+		}
 	}
 }
 
@@ -346,6 +398,18 @@ func TestE2EConfigUsesShortTimings(t *testing.T) {
 	s := cfg.Go.StatusConsumer
 	if s.MinIdle.Std() != 60*time.Second || s.RecoveryInterval.Std() != 2*time.Second || s.ConsumerCleanupIdle.Std() != 5*time.Second {
 		t.Errorf("go status consumer timings = %+v", s)
+	}
+	// Fault e2e (PR 2): two outbox workers retry one row at 0.5-1 attempt/s, so max_retries=12
+	// gives a Redis outage 12-24s before BLOCKED; stale_threshold=10s keeps the held claims of
+	// the kill scenarios unrecovered until the kill.
+	h, o := cfg.Go.Hashing, cfg.Go.Outbox
+	if h.Interval.Std() != time.Second || h.JobTimeout.Std() != 3*time.Second || h.MaxRetries != 3 ||
+		h.RecoveryInterval.Std() != time.Second || h.StaleThreshold.Std() != 10*time.Second {
+		t.Errorf("go hashing timings = %+v", h)
+	}
+	if o.Interval.Std() != 2*time.Second || o.JobTimeout.Std() != 3*time.Second || o.MaxRetries != 12 ||
+		o.RecoveryInterval.Std() != time.Second || o.StaleThreshold.Std() != 10*time.Second {
+		t.Errorf("go outbox timings = %+v", o)
 	}
 	// The consumer's publish budget needs a call_timeout that fits inside min_idle.
 	if cfg.RAG.CallTimeout.Std() != 5*time.Second {

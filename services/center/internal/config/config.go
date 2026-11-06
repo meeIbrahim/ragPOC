@@ -134,7 +134,8 @@ type RedisConfig struct {
 
 type IngestionConfig struct {
 	// MaxAttempts is how many times one document is ingested before it is marked FAILED.
-	// It is independent of the outbox and hash worker retry limits.
+	// It is independent of the outbox and hash worker retry limits ([go.outbox] and
+	// [go.hashing] max_retries).
 	MaxAttempts       int      `toml:"max_attempts"`
 	AllowedExtensions []string `toml:"allowed_extensions"`
 }
@@ -143,6 +144,24 @@ type GoConfig struct {
 	Port           int                  `toml:"port"`
 	SQLiteDir      string               `toml:"sqlite_dir"`
 	StatusConsumer StatusConsumerConfig `toml:"status_consumer"`
+	Hashing        WorkerConfig         `toml:"hashing"`
+	Outbox         OutboxConfig         `toml:"outbox"`
+}
+
+// WorkerConfig tunes a polling worker pool and its recovery sweep ([go.hashing], [go.outbox]).
+type WorkerConfig struct {
+	Interval         Duration `toml:"interval"`
+	BatchSize        int      `toml:"batch_size"`
+	JobTimeout       Duration `toml:"job_timeout"`
+	MaxRetries       int      `toml:"max_retries"`
+	RecoveryInterval Duration `toml:"recovery_interval"`
+	// StaleThreshold must exceed JobTimeout, so a live claim is never recovered.
+	StaleThreshold Duration `toml:"stale_threshold"`
+}
+
+type OutboxConfig struct {
+	WorkerConfig
+	SchemaVersion int `toml:"schema_version"`
 }
 
 type StatusConsumerConfig struct {
@@ -262,6 +281,12 @@ func (c *Config) Validate() error {
 		add("go.status_consumer.poison_threshold must be >= 1")
 	}
 
+	validateWorker("go.hashing", c.Go.Hashing, add)
+	validateWorker("go.outbox", c.Go.Outbox.WorkerConfig, add)
+	if c.Go.Outbox.SchemaVersion < 1 {
+		add("go.outbox.schema_version must be >= 1")
+	}
+
 	if c.Ingestion.MaxAttempts < 1 {
 		add("ingestion.max_attempts must be >= 1")
 	}
@@ -287,4 +312,31 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("invalid config: %s", strings.Join(problems, "; "))
 	}
 	return nil
+}
+
+// validateWorker checks one [go.hashing] or [go.outbox] table. A zero interval would panic the
+// worker's ticker, and a job that can outlive the stale threshold gets recovered while it runs.
+func validateWorker(table string, w WorkerConfig, add func(format string, args ...any)) {
+	for _, f := range []struct {
+		name string
+		d    Duration
+	}{
+		{"interval", w.Interval},
+		{"job_timeout", w.JobTimeout},
+		{"recovery_interval", w.RecoveryInterval},
+		{"stale_threshold", w.StaleThreshold},
+	} {
+		if f.d <= 0 {
+			add("%s.%s must be > 0", table, f.name)
+		}
+	}
+	if w.BatchSize < 1 {
+		add("%s.batch_size must be >= 1", table)
+	}
+	if w.MaxRetries < 1 {
+		add("%s.max_retries must be >= 1", table)
+	}
+	if w.StaleThreshold > 0 && w.JobTimeout >= w.StaleThreshold {
+		add("%s.stale_threshold (%v) must exceed job_timeout (%v)", table, w.StaleThreshold.Std(), w.JobTimeout.Std())
+	}
 }

@@ -88,7 +88,7 @@ status_stream="ingest.status"
 status_consumer_group="center-status"
 
 [ingestion]
-# Document ingest attempts; independent of the outbox and hash worker MaxRetries in code
+# Document ingest attempts; independent of [go.hashing] and [go.outbox] max_retries
 max_attempts=3
 allowed_extensions=[".pdf", ".txt", ".md"]
 
@@ -102,3 +102,22 @@ min_idle="60s"
 recovery_interval="30s"
 poison_threshold=3
 consumer_cleanup_idle="1h"
+
+[go.hashing]
+interval="2s"
+batch_size=20
+job_timeout="2m"
+max_retries=3
+recovery_interval="30s"
+# Must exceed job_timeout, so a live claim is never recovered
+stale_threshold="5m"
+
+[go.outbox]
+interval="5s"
+batch_size=100
+job_timeout="30s"
+max_retries=3
+recovery_interval="1m"
+# Must exceed job_timeout, so a live claim is never recovered
+stale_threshold="30m"
+schema_version=1
