@@ -13,3 +13,8 @@ func run(w *worker, start time.Time) {
 	w.clock = time.Now        // violation 3: a field not named now
 	_ = worker{clock: time.Now} // violation 4: a key not named now
 }
+
+func (w *worker) store() {
+	_ = worker{now: time.Now()} // violation 5: a clock read stored under a now key
+	w.now = func() time.Time { return time.Now() }().Local // violation 6: called at assignment, not deferred
+}

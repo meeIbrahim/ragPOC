@@ -234,6 +234,11 @@ func TestPassStopsBetweenRowsWhenCancelled(t *testing.T) {
 
 	newTestWorker(store, producer, testConfig(), discard).pass(ctx)
 
+	// The claim fake honours ctx, so row 2 would stay PENDING even if pass tried to claim it;
+	// only the attempt count shows the loop stopped.
+	if store.claims != 1 {
+		t.Errorf("claim attempts = %d; want 1: pass must check ctx before claiming the next row", store.claims)
+	}
 	assertRow(t, store, 2, domain.OutboxPending, 0, "a cancelled pass must not claim further rows")
 }
 

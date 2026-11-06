@@ -33,6 +33,7 @@ type fakeStore struct {
 	onClaim func(id int64)
 
 	recoverCalls []recoverCall
+	claims       int // claim attempts, cancelled ones included
 }
 
 type recoverCall struct {
@@ -81,6 +82,9 @@ func (f *fakeStore) FetchCandidates(ctx context.Context, limit int) ([]*domain.O
 }
 
 func (f *fakeStore) ClaimOutboxMessage(ctx context.Context, claimedBy string, id int64) (bool, error) {
+	f.mu.Lock()
+	f.claims++
+	f.mu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
@@ -123,6 +127,8 @@ func (f *fakeStore) MarkPublished(ctx context.Context, id int64, claimedBy strin
 	return true, nil
 }
 
+// RecoverStaleOutbox only records its arguments: the sweeper tests pin the cutoff and limit,
+// and the recovery SQL itself is covered by the store tests.
 func (f *fakeStore) RecoverStaleOutbox(ctx context.Context, cutoff time.Time, maxRetries int) (int64, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err

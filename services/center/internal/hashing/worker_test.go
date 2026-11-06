@@ -195,6 +195,11 @@ func TestPassStopsBetweenIntentsWhenCancelled(t *testing.T) {
 
 	newTestWorker(store, blob).pass(ctx)
 
+	// The claim fake honours ctx, so "second" would stay UPLOADED even if pass tried to claim
+	// it; only the attempt count shows the loop stopped.
+	if store.claims != 1 {
+		t.Errorf("claim attempts = %d; want 1: pass must check ctx before claiming the next intent", store.claims)
+	}
 	assertIntent(t, store, "second", domain.IntentUploaded, 0, "a cancelled pass must not claim further intents")
 }
 

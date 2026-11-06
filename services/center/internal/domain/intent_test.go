@@ -4,7 +4,11 @@ import "testing"
 
 // Intent states are stored as their names, so every state must survive the round trip.
 func TestIntentStateRoundTripsThroughItsName(t *testing.T) {
-	for s := IntentUnknown; s <= IntentFailed; s++ {
+	all := []IntentState{IntentUnknown, IntentWaiting, IntentUploaded, IntentHashing, IntentHashed, IntentExpired, IntentFailed}
+	if len(all) != len(stateName) {
+		t.Fatalf("this test lists %d states but stateName has %d; add the new state here", len(all), len(stateName))
+	}
+	for _, s := range all {
 		if got := StateFromString(s.String()); got != s {
 			t.Errorf("StateFromString(%q) = %v; want %v", s.String(), got, s)
 		}

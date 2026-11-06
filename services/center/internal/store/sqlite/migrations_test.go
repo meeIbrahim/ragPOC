@@ -2,6 +2,7 @@ package sqlite_test
 
 import (
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -57,13 +58,19 @@ func TestStatusCheckConstraintsRejectUnknownStatuses(t *testing.T) {
 	db := testutil.NewSQLite(t)
 	insertDoc(t, db, hash, "PROCESSING", 0)
 
-	cases := map[string]string{
-		"upload_intent":  `INSERT INTO upload_intent (uuid, file_name, status, expires_at) VALUES ('i', 'f', 'BOGUS', '2030-01-01')`,
-		"document_store": `INSERT INTO document_store (hash, perm_bucket_path, file_name, size, status) VALUES ('h2', 'p', 'f', 1, 'BOGUS')`,
-		"outbox":         `INSERT INTO outbox (hash, status) VALUES ('` + hash + `', 'BOGUS')`,
+	// %[1]s is the status; the same insert with a valid status must succeed, so a rejection can
+	// only come from the CHECK constraint.
+	cases := map[string]struct{ insert, valid string }{
+		"upload_intent":  {`INSERT INTO upload_intent (uuid, file_name, status, expires_at) VALUES ('i-%[1]s', 'f', '%[1]s', '2030-01-01')`, "WAITING"},
+		"document_store": {`INSERT INTO document_store (hash, perm_bucket_path, file_name, size, status) VALUES ('h-%[1]s', 'p', 'f', 1, '%[1]s')`, "INDEXED"},
+		"outbox":         {`INSERT INTO outbox (hash, status) VALUES ('` + hash + `', '%[1]s')`, "PUBLISHED"},
 	}
 	for _, table := range tables {
-		if _, err := db.Exec(cases[table]); err == nil {
+		c := cases[table]
+		if _, err := db.Exec(fmt.Sprintf(c.insert, c.valid)); err != nil {
+			t.Fatalf("%s rejected the valid status %s: %v; the insert itself is broken, so the BOGUS case proves nothing", table, c.valid, err)
+		}
+		if _, err := db.Exec(fmt.Sprintf(c.insert, "BOGUS")); err == nil {
 			t.Errorf("%s accepted status BOGUS; the CHECK constraint must reject a status outside its state machine", table)
 		}
 	}

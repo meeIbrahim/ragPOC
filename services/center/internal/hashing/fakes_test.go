@@ -37,6 +37,7 @@ type fakeStore struct {
 	onStartIngestion func(id string)
 
 	recoverCalls []recoverCall
+	claims       int // claim attempts, cancelled ones included
 }
 
 type recoverCall struct {
@@ -80,6 +81,9 @@ func (f *fakeStore) GetIntentsForHashing(ctx context.Context, limit int) ([]*dom
 }
 
 func (f *fakeStore) UpdateIntentToHashing(ctx context.Context, id string, claimedBy *string, _ *time.Time) (int64, error) {
+	f.mu.Lock()
+	f.claims++
+	f.mu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
@@ -144,6 +148,8 @@ func (f *fakeStore) ReleaseIntentClaim(ctx context.Context, id string, claimedBy
 	return 1, nil
 }
 
+// RecoverStaleIntents only records its arguments: the sweeper tests pin the cutoff and limit,
+// and the recovery SQL itself is covered by the store tests.
 func (f *fakeStore) RecoverStaleIntents(ctx context.Context, cutoff time.Time, maxRetries int) (int64, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
@@ -214,7 +220,10 @@ func (b *fakeBlob) put(name string, content []byte) {
 	b.uploads[name] = content
 }
 
-func (b *fakeBlob) ExistsInUploadBucket(_ context.Context, objectName string) (bool, error) {
+func (b *fakeBlob) ExistsInUploadBucket(ctx context.Context, objectName string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if err := b.errs["ExistsInUploadBucket"]; err != nil {
@@ -230,7 +239,9 @@ func (b *fakeBlob) HashUploadObject(ctx context.Context, objectName string) (str
 	}
 	if b.blockHash {
 		<-ctx.Done()
-		return "", 0, ctx.Err()
+	}
+	if err := ctx.Err(); err != nil {
+		return "", 0, err
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -245,7 +256,10 @@ func (b *fakeBlob) HashUploadObject(ctx context.Context, objectName string) (str
 	return sum, int64(len(content)), err
 }
 
-func (b *fakeBlob) MigrateToIngestion(_ context.Context, objectName string, hash string) (string, error) {
+func (b *fakeBlob) MigrateToIngestion(ctx context.Context, objectName string, hash string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if err := b.errs["MigrateToIngestion"]; err != nil {

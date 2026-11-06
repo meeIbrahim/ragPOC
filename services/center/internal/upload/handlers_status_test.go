@@ -124,8 +124,12 @@ func TestStatusHandlerErrors(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			store := newFakeStore()
 			c.seed(store)
-			if rec := serve(store, http.MethodGet, "/i1"); rec.Code != c.status {
+			rec := serve(store, http.MethodGet, "/i1")
+			if rec.Code != c.status {
 				t.Errorf("status = %d; want %d", rec.Code, c.status)
+			}
+			if c.status == http.StatusInternalServerError && strings.Contains(rec.Body.String(), docHash) {
+				t.Errorf("body = %q; an internal error must not leak the document hash to the client", rec.Body.String())
 			}
 		})
 	}

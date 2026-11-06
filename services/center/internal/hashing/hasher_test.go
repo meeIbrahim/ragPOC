@@ -22,7 +22,7 @@ func TestSum256KnownVectors(t *testing.T) {
 	}
 }
 
-func TestSum256StreamsALargeReader(t *testing.T) {
+func TestSum256MatchesTheStdlibOnA10MiBInput(t *testing.T) {
 	content := bytes.Repeat([]byte("0123456789abcdef"), 10<<20/16) // 10 MiB
 	want := sha256.Sum256(content)
 

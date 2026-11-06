@@ -21,7 +21,8 @@ const rule = "production code must read the clock only through a `now` field " +
 	"(`now: time.Now` or `now: func() time.Time { return time.Now().UTC() }`), so tests can pin time"
 
 // clockViolations returns "file:line: time.X" for every clock read in file that is not the
-// value of a composite-literal key `now` or of an assignment to a `.now` field.
+// value of a composite-literal key `now` or of an assignment to a `.now` field. That value must
+// be the function itself (`time.Now`) or a func literal; `now: time.Now()` stores one reading.
 func clockViolations(fset *token.FileSet, file *ast.File) []string {
 	timePkg := timeImportName(file)
 	if timePkg == "" {
@@ -32,12 +33,12 @@ func clockViolations(fset *token.FileSet, file *ast.File) []string {
 	ast.Inspect(file, func(n ast.Node) bool {
 		switch n := n.(type) {
 		case *ast.KeyValueExpr:
-			if key, ok := n.Key.(*ast.Ident); ok && key.Name == "now" {
+			if key, ok := n.Key.(*ast.Ident); ok && key.Name == "now" && isClockFunc(n.Value, timePkg) {
 				allowed = append(allowed, n.Value)
 			}
 		case *ast.AssignStmt:
 			for i, lhs := range n.Lhs {
-				if sel, ok := lhs.(*ast.SelectorExpr); ok && sel.Sel.Name == "now" && i < len(n.Rhs) {
+				if sel, ok := lhs.(*ast.SelectorExpr); ok && sel.Sel.Name == "now" && i < len(n.Rhs) && isClockFunc(n.Rhs[i], timePkg) {
 					allowed = append(allowed, n.Rhs[i])
 				}
 			}
@@ -65,6 +66,19 @@ func clockViolations(fset *token.FileSet, file *ast.File) []string {
 		return true
 	})
 	return found
+}
+
+// isClockFunc reports whether e is a clock function rather than one reading of the clock:
+// the bare `time.Now` method value, or a func literal (read each time it is called).
+func isClockFunc(e ast.Expr, timePkg string) bool {
+	switch e := e.(type) {
+	case *ast.FuncLit:
+		return true
+	case *ast.SelectorExpr:
+		pkg, ok := e.X.(*ast.Ident)
+		return ok && pkg.Name == timePkg && e.Sel.Name == "Now"
+	}
+	return false
 }
 
 // timeImportName is the local name of the "time" import, or "" when the file does not import it.
@@ -106,6 +120,8 @@ func TestClockRuleCatchesEveryBypass(t *testing.T) {
 		"bad.go.txt:12:6: time.Since",
 		"bad.go.txt:13:12: time.Now",
 		"bad.go.txt:14:20: time.Now",
+		"bad.go.txt:18:18: time.Now",
+		"bad.go.txt:19:36: time.Now",
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Errorf("violations in the bad fixture:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
