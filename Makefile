@@ -1,4 +1,4 @@
-.PHONY: grpc-generate run_migrations run_worker run_server reset_index eval test e2e up stack down go_migrate go_migrate_down
+.PHONY: grpc-generate run_migrations run_worker run_server reset_index eval test e2e e2e-faults up stack down go_migrate go_migrate_down
 
 # gRPC
 # The proto's own directory is the include root: with -I./protos, protoc writes
@@ -45,6 +45,12 @@ test:
 # `make e2e SCENARIOS="crash hang"` runs only those scenarios.
 e2e:
 	./scripts/e2e.sh $(SCENARIOS)
+
+# Failure-injection e2e (Redis outages, killed workers, concurrent duplicates). Separate from
+# `make e2e` so a timing flake here never turns the stable run red.
+# `make e2e-faults SCENARIOS=redis_outage_short` runs only that one.
+e2e-faults:
+	./scripts/e2e.sh --faults $(SCENARIOS)
 
 go_migrate:
 	go build -C services/center -o ../../bin/migrate ./migrations
