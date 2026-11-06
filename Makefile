@@ -1,4 +1,4 @@
-.PHONY: grpc-generate run_migrations run_worker run_server reset_index eval test e2e e2e-faults up stack down go_migrate go_migrate_down
+.PHONY: grpc-generate run_migrations run_worker run_server reset_index eval test test-integration e2e e2e-faults up stack down go_migrate go_migrate_down
 
 # gRPC
 # The proto's own directory is the include root: with -I./protos, protoc writes
@@ -40,6 +40,17 @@ eval:
 test:
 	cd services/center && go test -race ./...
 	cd services/rag-service && uv run pytest
+
+# Tests against the dev infra (`make up`: Redis, MinIO, Qdrant on localhost). Each test skips
+# when its service is not configured or not reachable. The MinIO test also needs MINIO_URL,
+# MINIO_ACCESS_KEY and MINIO_SECRET_KEY in your environment (not set here, to keep credentials
+# out of the Makefile).
+REDIS_ADDR ?= localhost:6379
+REDIS_URL ?= redis://localhost:6379/0
+QDRANT_URL ?= http://localhost:6333
+test-integration:
+	cd services/center && REDIS_ADDR=$(REDIS_ADDR) go test -race -count=1 -tags integration ./internal/events/redis/
+	cd services/rag-service && REDIS_URL=$(REDIS_URL) QDRANT_URL=$(QDRANT_URL) uv run pytest -m integration -rs
 
 # Compose e2e of the whole system in an isolated project (needs Docker, takes a few minutes).
 # `make e2e SCENARIOS="crash hang"` runs only those scenarios.
