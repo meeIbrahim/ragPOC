@@ -9,11 +9,12 @@ import (
 )
 
 type OutboxStore struct {
-	db *sql.DB
+	db  *sql.DB
+	now func() time.Time
 }
 
 func NewOutboxStore(db *sql.DB) *OutboxStore {
-	return &OutboxStore{db: db}
+	return &OutboxStore{db: db, now: func() time.Time { return time.Now().UTC() }}
 }
 
 func (s *OutboxStore) FetchCandidates(ctx context.Context, limit int) ([]*domain.OutboxMessage, error) {
@@ -39,7 +40,7 @@ func (s *OutboxStore) FetchCandidates(ctx context.Context, limit int) ([]*domain
 }
 
 func (s *OutboxStore) ClaimOutboxMessage(ctx context.Context, claimedBy string, id int64) (bool, error) {
-	now := time.Now().UTC()
+	now := s.now()
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE outbox SET status = ?, claimed_by = ?, claimed_at = ? WHERE id = ? AND status = ?`,
 		domain.OutboxClaimed, claimedBy, now, id, domain.OutboxPending)

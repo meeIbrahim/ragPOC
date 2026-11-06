@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"testing"
 
@@ -28,7 +29,7 @@ func NewSQLite(t testing.TB) *sql.DB {
 	}
 	t.Cleanup(func() { db.Close() })
 
-	for _, file := range migrationFiles(t) {
+	for _, file := range MigrationFiles(t, "up") {
 		body, err := os.ReadFile(file)
 		if err != nil {
 			t.Fatalf("read %s: %v", file, err)
@@ -40,18 +41,25 @@ func NewSQLite(t testing.TB) *sql.DB {
 	return db
 }
 
-// migrationFiles returns the up migrations in version order. The migrate binary reads them
-// from an embedded FS, so tests read the same files from disk. The module root is found from
-// the working directory (go test runs in the package directory) because runtime.Caller paths
-// are rewritten by -trimpath.
-func migrationFiles(t testing.TB) []string {
+// MigrationFiles returns the "up" migrations in version order, or the "down" migrations in
+// reverse version order (the order they must run in). The migrate binary reads them from an
+// embedded FS, so tests read the same files from disk. The module root is found from the
+// working directory (go test runs in the package directory) because runtime.Caller paths are
+// rewritten by -trimpath.
+func MigrationFiles(t testing.TB, direction string) []string {
 	t.Helper()
+	if direction != "up" && direction != "down" {
+		t.Fatalf("migration direction %q: want up or down", direction)
+	}
 	dir := filepath.Join(moduleRoot(t), "migrations")
-	files, err := filepath.Glob(filepath.Join(dir, "*.up.sql"))
+	files, err := filepath.Glob(filepath.Join(dir, "*."+direction+".sql"))
 	if err != nil || len(files) == 0 {
-		t.Fatalf("no migrations found in %s (err %v)", dir, err)
+		t.Fatalf("no %s migrations found in %s (err %v)", direction, dir, err)
 	}
 	sort.Strings(files)
+	if direction == "down" {
+		slices.Reverse(files)
+	}
 	return files
 }
 

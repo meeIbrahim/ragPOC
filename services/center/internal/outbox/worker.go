@@ -60,6 +60,7 @@ type Worker struct {
 	repo     Store
 	producer Producer
 	logger   *slog.Logger
+	now      func() time.Time
 }
 
 func NewWorker(id string, cfg Config, repo Store, producer Producer, logger *slog.Logger) *Worker {
@@ -69,6 +70,7 @@ func NewWorker(id string, cfg Config, repo Store, producer Producer, logger *slo
 		producer: producer,
 		repo:     repo,
 		logger:   logger.With("worker", id),
+		now:      func() time.Time { return time.Now().UTC() },
 	}
 }
 
@@ -140,7 +142,7 @@ func (w *Worker) processMessage(ctx context.Context, msg *domain.OutboxMessage) 
 }
 
 func (w *Worker) publishMessage(ctx context.Context, msg *domain.OutboxMessage, document *domain.Document) (*string, error) {
-	now := time.Now().UTC()
+	now := w.now()
 	event := &events.StreamIngestionEvent{
 		ID:            uuid.NewString(),
 		Hash:          document.Hash,
@@ -187,6 +189,7 @@ type Sweeper struct {
 	cfg    Config
 	repo   Store
 	logger *slog.Logger
+	now    func() time.Time
 }
 
 func NewSweeper(cfg Config, repo Store, logger *slog.Logger) *Sweeper {
@@ -194,6 +197,7 @@ func NewSweeper(cfg Config, repo Store, logger *slog.Logger) *Sweeper {
 		cfg:    cfg,
 		repo:   repo,
 		logger: logger.With("component", "outbox-recovery"),
+		now:    func() time.Time { return time.Now().UTC() },
 	}
 }
 
@@ -206,7 +210,7 @@ func (s *Sweeper) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			cutoff := time.Now().UTC().Add(-s.cfg.StaleThreshold)
+			cutoff := s.now().Add(-s.cfg.StaleThreshold)
 			n, err := s.repo.RecoverStaleOutbox(ctx, cutoff, s.cfg.MaxRetries)
 			if err != nil {
 				s.logger.Error("recover stale outbox claims failed", "err", err)

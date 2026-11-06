@@ -32,15 +32,16 @@ type Service struct {
 	repo    Store
 	storage Blob
 	logger  *slog.Logger
+	now     func() time.Time
 }
 
 func NewService(repo Store, storage Blob, logger *slog.Logger) *Service {
-	return &Service{repo: repo, storage: storage, logger: logger}
+	return &Service{repo: repo, storage: storage, logger: logger, now: func() time.Time { return time.Now().UTC() }}
 }
 
 func (s *Service) CreateIntent(ctx context.Context, fileName string) (*domain.Intent, *url.URL, error) {
 	expirationDuration := 2 * time.Hour
-	now := time.Now().UTC()
+	now := s.now()
 	id := uuid.NewString()
 	objectPath := id
 
@@ -80,7 +81,7 @@ var ErrIntentNotFound = domain.ErrIntentNotFound
 var ErrIntentUnknown = errors.New("upload intent in unknown state")
 
 func (s *Service) ConfirmUpload(ctx context.Context, id string) (*domain.Intent, error) {
-	now := time.Now().UTC()
+	now := s.now()
 	rows, err := s.repo.UpdateIntentToUploaded(ctx, id, &now)
 	if err != nil {
 		return nil, fmt.Errorf("update upload_intent to uploaded: %w", err)
@@ -139,17 +140,21 @@ func (s *Service) GetUploadStatus(ctx context.Context, id string) (*domain.Inten
 		return nil, nil, fmt.Errorf("get upload_intent: %w", err)
 	}
 	var status string
-	now := time.Now().UTC()
-	if intent.Status == domain.IntentWaiting && now.After(intent.ExpiresAt) {
+	now := s.now()
+	// At or past expires_at, matching the confirm gate (expires_at > now), so the poll never
+	// says WAITING for an upload the gate would refuse.
+	if intent.Status == domain.IntentWaiting && !now.Before(intent.ExpiresAt) {
 		status = domain.IntentExpired.String()
 	} else if intent.Hash != nil {
 		document, err := s.GetDocument(ctx, *intent.Hash)
 		if err != nil {
 			return nil, nil, fmt.Errorf("get document: %w", err)
 		}
-		if document != nil {
-			status = string(document.Status)
+		if document == nil {
+			// The FK makes this unreachable short of corruption; never answer it with an empty status.
+			return nil, nil, fmt.Errorf("upload_intent %s links to missing document %s", id, *intent.Hash)
 		}
+		status = string(document.Status)
 	} else if intent.Status == domain.IntentHashed || intent.Status == domain.IntentHashing {
 		status = string(domain.DocumentProcessing)
 	} else if intent.Status == domain.IntentUnknown {
