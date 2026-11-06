@@ -233,3 +233,41 @@ func TestFailuresAreLoggedWithTheIntent(t *testing.T) {
 		t.Errorf("log = %q; want the intent id and the cause, so a stuck upload can be traced", out)
 	}
 }
+
+// ---- fault hook (CENTER_FAULT=hash-hang, e2e only)
+
+// HangAfterClaim must hold the claim until the process dies, even past JobTimeout: the e2e
+// kills the process while the intent is HASHING and expects the recovery sweep to find it.
+func TestHangAfterClaimHoldsTheClaimUntilShutdown(t *testing.T) {
+	store, blob := newFakeStore(), newFakeBlob()
+	uploaded(store, blob, "i1")
+	cfg := testConfig()
+	cfg.JobTimeout = 20 * time.Millisecond
+	cfg.HangAfterClaim = true
+	w := NewWorker("w1", cfg, store, blob, discard)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { w.pass(ctx); close(done) }()
+
+	time.Sleep(10 * cfg.JobTimeout) // well past the job deadline
+	select {
+	case <-done:
+		t.Fatal("pass returned while the process was still running; the hook must block until shutdown")
+	default:
+	}
+	if in := store.intent("i1"); in.status != domain.IntentHashing || in.claimedBy != "w1" || in.retries != 0 {
+		t.Errorf("intent = %s/%s/retries=%d; want HASHING held by w1: the hook must not hash, release or fail", in.status, in.claimedBy, in.retries)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("pass did not return after shutdown")
+	}
+	if in := store.intent("i1"); in.status != domain.IntentHashing || in.claimedBy != "w1" || len(store.documents) != 0 {
+		t.Errorf("after shutdown: intent = %s/%s, documents = %d; want the claim left for the recovery sweep and nothing recorded",
+			in.status, in.claimedBy, len(store.documents))
+	}
+}

@@ -256,3 +256,44 @@ func TestRunStopsOnCancel(t *testing.T) {
 		t.Fatal("Run did not return after cancel")
 	}
 }
+
+// ---- fault hook (CENTER_FAULT=outbox-hang-after-publish, e2e only)
+
+// HangAfterPublish must publish once and then hold the claim until the process dies, even past
+// JobTimeout: the e2e kills the process between publish and MarkPublished, so the recovery
+// sweep re-publishes and the consumer sees a duplicate event.
+func TestHangAfterPublishHoldsTheClaimUntilShutdown(t *testing.T) {
+	store, producer := newFakeStore(), &fakeProducer{}
+	store.addPending(1, docHash, 0)
+	cfg := testConfig()
+	cfg.JobTimeout = 20 * time.Millisecond
+	cfg.HangAfterPublish = true
+	w := newTestWorker(store, producer, cfg, discard)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { w.pass(ctx); close(done) }()
+
+	time.Sleep(10 * cfg.JobTimeout) // well past the job deadline
+	select {
+	case <-done:
+		t.Fatal("pass returned while the process was still running; the hook must block until shutdown")
+	default:
+	}
+	if n := len(producer.events()); n != 1 {
+		t.Errorf("published %d events; want exactly 1 before the hook blocks", n)
+	}
+	if r := store.row(1); r.status != domain.OutboxClaimed || r.claimedBy != "w1" || r.retries != 0 {
+		t.Errorf("row = %s/%s/retries=%d; want CLAIMED by w1: the hook must neither mark published nor release", r.status, r.claimedBy, r.retries)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("pass did not return after shutdown")
+	}
+	if r := store.row(1); r.status != domain.OutboxClaimed || r.claimedBy != "w1" {
+		t.Errorf("after shutdown: row = %s/%s; want the claim left for the recovery sweep", r.status, r.claimedBy)
+	}
+}

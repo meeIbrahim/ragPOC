@@ -31,6 +31,10 @@ services:
 
   center:
     ports: !reset []
+    environment:
+      # Fault hook for `make e2e-faults` (hash-hang | outbox-hang-after-publish). scripts/e2e.sh
+      # sets it inline for one re-create; empty means no fault.
+      CENTER_FAULT: ${CENTER_FAULT:-}
     volumes:
       - ./deploy/config.e2e.toml:/config/config.toml:ro
 
@@ -48,6 +52,10 @@ services:
       - ./deploy/config.e2e.toml:/config/config.toml:ro
 
   e2e:
+    environment:
+      # Ties a fault scenario's arrange and verify steps to one run (they find their upload by a
+      # filename that carries it).
+      E2E_RUN_ID: ${E2E_RUN_ID:-}
     volumes:
       - ./deploy/config.e2e.toml:/config/config.toml:ro
 

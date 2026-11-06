@@ -93,3 +93,27 @@ recovery_interval="2s"
 poison_threshold=3
 # ...and short, so an idle consumer with nothing pending disappears within a few seconds.
 consumer_cleanup_idle="5s"
+
+# Short timings for `make e2e-faults`. Two outbox workers each retry a PENDING row every
+# interval, so a Redis outage gets max_retries / (0.5-1 attempt per second) = 20-40s before the
+# row is BLOCKED: room for the short outage's container start and Redis health wait.
+# stale_threshold stays above the time a kill scenario holds a claim before the kill, so the hung
+# process's own sweeper does not recover it first.
+[go.hashing]
+interval="1s"
+batch_size=20
+job_timeout="3s"
+max_retries=3
+recovery_interval="1s"
+# Must exceed job_timeout, so a live claim is never recovered
+stale_threshold="10s"
+
+[go.outbox]
+interval="2s"
+batch_size=100
+job_timeout="3s"
+max_retries=20
+recovery_interval="1s"
+# Must exceed job_timeout, so a live claim is never recovered
+stale_threshold="10s"
+schema_version=1

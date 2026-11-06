@@ -29,6 +29,10 @@ type Config struct {
 	RecoveryInterval time.Duration
 	StaleThreshold   time.Duration
 	SchemaVersion    int
+	// HangAfterPublish is a fault hook for the e2e (CENTER_FAULT=outbox-hang-after-publish):
+	// after a successful publish the worker holds the claim until shutdown instead of marking
+	// the row, so a killed process leaves a delivered but CLAIMED row behind.
+	HangAfterPublish bool
 }
 type Producer interface {
 	PublishIngestionEvent(ctx context.Context, event *events.StreamIngestionEvent) (string, error)
@@ -129,6 +133,12 @@ func (w *Worker) processMessage(ctx context.Context, msg *domain.OutboxMessage) 
 	if err != nil {
 		w.logger.Error("Failed to publish message", "id", msg.Id, "error", err)
 		w.releaseClaim(ctx, msg.Id)
+		return
+	}
+	if w.cfg.HangAfterPublish {
+		// Wait on the worker's context, not the job context: the claim must outlive JobTimeout.
+		w.logger.Warn("fault hook outbox-hang-after-publish: holding the claim until shutdown", "id", msg.Id, "hash", msg.Hash)
+		<-ctx.Done()
 		return
 	}
 	success, err := w.repo.MarkPublished(ctx, msg.Id, w.id)

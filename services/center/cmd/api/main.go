@@ -63,6 +63,14 @@ func run() error {
 	if len(cfg.UnknownKeys) > 0 {
 		logger.Warn("config has keys this service does not read", "keys", cfg.UnknownKeys)
 	}
+	faultValue := os.Getenv("CENTER_FAULT")
+	f, err := parseFault(faultValue)
+	if err != nil {
+		return err
+	}
+	if faultValue != "" {
+		logger.Warn("fault hook enabled: this center holds claims on purpose; e2e only", "CENTER_FAULT", faultValue)
+	}
 
 	db, err := sqlite.Open(cfg)
 	if err != nil {
@@ -95,7 +103,7 @@ func run() error {
 
 	store := sqlite.NewStore(db)
 
-	hashCfg := hashing.DefaultConfig()
+	hashCfg := hashingConfig(cfg.Go.Hashing, f)
 	var wg sync.WaitGroup
 	for range hashWorkers {
 		worker := hashing.NewWorker(hashing.NewWorkerID(), hashCfg, store, minioClient, logger)
@@ -112,7 +120,7 @@ func run() error {
 		sweeper.Run(ctx)
 	}()
 
-	outboxCfg := outbox.DefaultConfig()
+	outboxCfg := outboxConfig(cfg.Go.Outbox, f)
 	producer := redisevents.NewProducer(redisClient)
 	for range outboxWorkers {
 		worker := outbox.NewWorker(outbox.NewWorkerId(), outboxCfg, store, producer, logger)
@@ -169,4 +177,47 @@ func run() error {
 	}
 	log.Printf("center service stopped")
 	return nil
+}
+
+// fault is the e2e fault hook selected by CENTER_FAULT; the zero value runs no fault.
+type fault struct {
+	hashHang               bool
+	outboxHangAfterPublish bool
+}
+
+func parseFault(v string) (fault, error) {
+	switch v {
+	case "":
+		return fault{}, nil
+	case "hash-hang":
+		return fault{hashHang: true}, nil
+	case "outbox-hang-after-publish":
+		return fault{outboxHangAfterPublish: true}, nil
+	}
+	return fault{}, fmt.Errorf("CENTER_FAULT=%q: want hash-hang, outbox-hang-after-publish or unset", v)
+}
+
+func hashingConfig(w config.WorkerConfig, f fault) hashing.Config {
+	return hashing.Config{
+		Interval:         w.Interval.Std(),
+		BatchSize:        w.BatchSize,
+		JobTimeout:       w.JobTimeout.Std(),
+		MaxRetries:       w.MaxRetries,
+		RecoveryInterval: w.RecoveryInterval.Std(),
+		StaleThreshold:   w.StaleThreshold.Std(),
+		HangAfterClaim:   f.hashHang,
+	}
+}
+
+func outboxConfig(o config.OutboxConfig, f fault) outbox.Config {
+	return outbox.Config{
+		Interval:         o.Interval.Std(),
+		BatchSize:        o.BatchSize,
+		JobTimeout:       o.JobTimeout.Std(),
+		MaxRetries:       o.MaxRetries,
+		RecoveryInterval: o.RecoveryInterval.Std(),
+		StaleThreshold:   o.StaleThreshold.Std(),
+		SchemaVersion:    o.SchemaVersion,
+		HangAfterPublish: f.outboxHangAfterPublish,
+	}
 }
