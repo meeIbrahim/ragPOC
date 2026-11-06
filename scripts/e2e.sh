@@ -14,6 +14,10 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# docker-compose.e2e.yml interpolates these from the caller's environment; a value left exported
+# in a developer shell must never hook the center or tag a run.
+unset CENTER_FAULT E2E_RUN_ID
+
 MODE=phase0
 if [ "${1:-}" = "--faults" ]; then
   MODE=faults
@@ -104,9 +108,18 @@ recreate_center() {
 
 redis_up() { "${DC[@]}" up -d --no-deps --wait redis; } # `start` has no health wait
 
+# center_has_fault: the running center logged the fault WARN. The logs are read whole first:
+# piping them into `grep -q` under pipefail can end in SIGPIPE (141), which would read as
+# "no fault" exactly when there is one.
+center_has_fault() {
+  local out
+  out=$("${DC[@]}" logs center 2>&1) || true
+  grep -q 'fault hook enabled' <<<"$out"
+}
+
 # A center re-created without the fault must not have logged the fault WARN (edge 10).
 center_fault_free() {
-  if "${DC[@]}" logs center 2>&1 | grep -q 'fault hook enabled'; then
+  if center_has_fault; then
     echo "   center still runs a fault hook after re-create" >&2
     return 1
   fi
@@ -158,7 +171,7 @@ kill_scenario() {
 # fault-free center.
 restore_after_fault() {
   redis_up >/dev/null 2>&1 || echo "   could not bring Redis back" >&2
-  if "${DC[@]}" logs center 2>&1 | grep -q 'fault hook enabled' || [ -z "$("${DC[@]}" ps -q --status running center)" ]; then
+  if center_has_fault || [ -z "$("${DC[@]}" ps -q --status running center)" ]; then
     recreate_center "" >/dev/null 2>&1 || echo "   could not re-create the center" >&2
   fi
 }

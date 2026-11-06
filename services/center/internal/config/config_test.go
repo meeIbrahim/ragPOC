@@ -212,6 +212,10 @@ port=50051`, "rag_grpc.port"},
 		{"missing status_stream", `status_stream="ingest.status"`, ``, "status_stream"},
 		{"missing status group", `status_consumer_group="center-status"`, ``, "status_consumer_group"},
 		{"hashing interval zero", "[go.hashing]\ninterval=\"2s\"", "[go.hashing]\ninterval=\"0s\"", "go.hashing.interval"},
+		{"hashing job_timeout zero", `job_timeout="2m"`, `job_timeout="0s"`, "go.hashing.job_timeout"},
+		{"outbox interval zero", "[go.outbox]\ninterval=\"5s\"", "[go.outbox]\ninterval=\"0s\"", "go.outbox.interval"},
+		{"outbox batch_size zero", `batch_size=100`, `batch_size=0`, "go.outbox.batch_size"},
+		{"outbox recovery_interval zero", "max_retries=4\nrecovery_interval=\"1m\"", "max_retries=4\nrecovery_interval=\"0s\"", "go.outbox.recovery_interval"},
 		{"hashing batch_size zero", `batch_size=20`, `batch_size=0`, "go.hashing.batch_size"},
 		{"hashing max_retries zero", `max_retries=3`, `max_retries=0`, "go.hashing.max_retries"},
 		{"hashing recovery_interval zero", `recovery_interval="31s"`, `recovery_interval="0s"`, "go.hashing.recovery_interval"},
@@ -399,15 +403,15 @@ func TestE2EConfigUsesShortTimings(t *testing.T) {
 	if s.MinIdle.Std() != 60*time.Second || s.RecoveryInterval.Std() != 2*time.Second || s.ConsumerCleanupIdle.Std() != 5*time.Second {
 		t.Errorf("go status consumer timings = %+v", s)
 	}
-	// Fault e2e (PR 2): two outbox workers retry one row at 0.5-1 attempt/s, so max_retries=12
-	// gives a Redis outage 12-24s before BLOCKED; stale_threshold=10s keeps the held claims of
+	// Fault e2e (PR 2): two outbox workers retry one row at 0.5-1 attempt/s, so max_retries=20
+	// gives a Redis outage 20-40s before BLOCKED; stale_threshold=10s keeps the held claims of
 	// the kill scenarios unrecovered until the kill.
 	h, o := cfg.Go.Hashing, cfg.Go.Outbox
 	if h.Interval.Std() != time.Second || h.JobTimeout.Std() != 3*time.Second || h.MaxRetries != 3 ||
 		h.RecoveryInterval.Std() != time.Second || h.StaleThreshold.Std() != 10*time.Second {
 		t.Errorf("go hashing timings = %+v", h)
 	}
-	if o.Interval.Std() != 2*time.Second || o.JobTimeout.Std() != 3*time.Second || o.MaxRetries != 12 ||
+	if o.Interval.Std() != 2*time.Second || o.JobTimeout.Std() != 3*time.Second || o.MaxRetries != 20 ||
 		o.RecoveryInterval.Std() != time.Second || o.StaleThreshold.Std() != 10*time.Second {
 		t.Errorf("go outbox timings = %+v", o)
 	}

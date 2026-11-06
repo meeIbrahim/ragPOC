@@ -1,6 +1,7 @@
 package main
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -31,6 +32,21 @@ func TestParseFaultRejectsAnUnknownValueByName(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), `"`+v+`"`) {
 			t.Errorf("parseFault(%q) err = %v; want an error naming the value", v, err)
 		}
+	}
+}
+
+// The workers used to run on hashing/outbox.DefaultConfig(); the shipped config.toml must keep
+// those values, and the defaults (still asserted on by the sweeper tests) must not drift from it.
+func TestRepoConfigKeepsTheWorkerDefaults(t *testing.T) {
+	cfg, err := config.Load(filepath.Join("..", "..", "..", "..", "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := hashingConfig(cfg.Go.Hashing, fault{}); got != hashing.DefaultConfig() {
+		t.Errorf("[go.hashing] = %+v; want hashing.DefaultConfig() %+v", got, hashing.DefaultConfig())
+	}
+	if got := outboxConfig(cfg.Go.Outbox, fault{}); got != outbox.DefaultConfig() {
+		t.Errorf("[go.outbox] = %+v; want outbox.DefaultConfig() %+v", got, outbox.DefaultConfig())
 	}
 }
 

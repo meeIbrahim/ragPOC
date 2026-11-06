@@ -54,9 +54,11 @@ func requireYoungClaim(t *testing.T, what string, claimedAt sql.NullTime, stale 
 
 // ---- concurrent duplicate upload (edge 5)
 
-// Two uploads of identical bytes confirmed at the same moment: the two hash workers race into
-// StartIngestion with one hash. There must be one document and one ingestion event, and both
-// uploads must end linked to it.
+// Two uploads of identical bytes confirmed at the same moment. Whether the two hash workers race
+// into StartIngestion or one worker takes both in a single pass is up to the scheduler; either
+// way there must be one document and one ingestion event, and both uploads must end linked to
+// it. The race itself is pinned deterministically by the store test
+// TestStartIngestionConcurrentDuplicatesCreateOneDocument.
 func testDuplicateUploadConcurrent(t *testing.T) {
 	s := newScenario(t)
 	content := uniqueContent("duplicate")
