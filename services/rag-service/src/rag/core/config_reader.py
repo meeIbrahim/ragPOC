@@ -160,7 +160,9 @@ _KNOWN: dict[str, Any] = {
     "sqlite": _leaves("dir"),
     "qdrant": _leaves("url"),
     "ollama": _leaves("url"),
-    "rag_grpc": _leaves("port", "max_workers"),
+    # host is where the Go center dials this server; the server binds every interface, so it is
+    # modelled only to keep it out of unknown_keys.
+    "rag_grpc": _leaves("port", "max_workers", "host"),
     "rag": {
         **_leaves("collection", "embedding_model", "embedding_dim", "llm_model", "top_k",
                   "chunk_size", "chunk_overlap", "call_timeout", "min_score", "embed_batch_size",
