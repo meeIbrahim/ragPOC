@@ -393,11 +393,10 @@ func TestAskStopsOnWriteFailure(t *testing.T) {
 	w := &failingWriter{header: http.Header{}, okWrites: 1} // sources written, first delta fails
 	hs.h.Ask(w, askRequest(context.Background(), `{"question":"q?"}`))
 
+	// The yield count is the proof: stream() cancels its context on return either way, so the
+	// context alone cannot show the loop stopped at the failure.
 	if got := asker.yieldCount(); got != 2 {
 		t.Errorf("asker yielded %d parts, want 2: the handler kept reading after a failed write", got)
-	}
-	if asker.context().Err() == nil {
-		t.Error("asker context still live after a failed write: Groq would keep generating")
 	}
 	if !strings.Contains(hs.logs.String(), `"outcome":"client_gone"`) {
 		t.Errorf("log %s: want outcome client_gone", hs.logs.String())
