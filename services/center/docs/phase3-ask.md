@@ -30,12 +30,7 @@ GROQ_API_KEY="$GROQ" "${DC[@]}" up -d --build --wait center rag-consumer rag-ser
 "${DC[@]}" logs rag-consumer | grep "starting ingest consumer"   # real ingest, not a stub mode
 ```
 
-`rag-server` has no healthcheck, so `up --wait` returns once the container runs, before the port serves. After every (re)start of it, wait for its ready line, or the next ask gets `connection refused` (`UNAVAILABLE`):
-
-```sh
-rag_ready() { until "${DC[@]}" logs rag-server 2>&1 | grep -q "serving rag.v1"; do sleep 1; done; }
-rag_ready
-```
+`rag-server`'s healthcheck passes only once its port serves, so `up --wait` returns when it is ready.
 
 Both services log `config has keys this service does not read: rag_grpc.host` at startup; that key is Go's only.
 
@@ -105,9 +100,9 @@ Expected: the Python line is present, and the center's `ask` line has `"outcome"
 ## 4. Groq unreachable
 
 ```sh
-GROQ_API_KEY=invalid "${DC[@]}" up -d --force-recreate --no-deps rag-server && rag_ready
+GROQ_API_KEY=invalid "${DC[@]}" up -d --force-recreate --no-deps --wait rag-server
 curl -sN -X POST localhost:8080/ask -H 'Content-Type: application/json' -d '{"question":"What is a pod?"}'
-GROQ_API_KEY="$GROQ" "${DC[@]}" up -d --force-recreate --no-deps rag-server && rag_ready
+GROQ_API_KEY="$GROQ" "${DC[@]}" up -d --force-recreate --no-deps --wait rag-server
 ```
 
 Expected: `event: sources`, then `event: error` with `{"code":"UNAVAILABLE","message":"the answer service is unavailable, try again"}`. No Groq text reaches the client.
