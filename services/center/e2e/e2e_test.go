@@ -27,6 +27,9 @@ func TestPhase0(t *testing.T) {
 	t.Run("hang", testHang)
 	t.Run("unsupported_ext", testUnsupportedExtension)
 	t.Run("consumer_cleanup", testConsumerCleanup)
+	t.Run("ask_validation", testAskValidation)
+	t.Run("ask_short_circuit", testAskShortCircuit)
+	t.Run("ask_unavailable", testAskUnavailable)
 }
 
 // stub mode: indexed
