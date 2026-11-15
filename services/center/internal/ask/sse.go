@@ -44,6 +44,8 @@ func startSSE(w http.ResponseWriter) *sseWriter {
 	h.Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 	s := &sseWriter{w: w, rc: http.NewResponseController(w)}
+	// A failed first flush is not fatal here: the first event() flush reports it, and the
+	// handler treats any write or flush error as the client being gone.
 	_ = s.rc.Flush()
 	return s
 }

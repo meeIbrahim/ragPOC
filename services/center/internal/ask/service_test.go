@@ -54,6 +54,19 @@ func TestPrepareNamesFirstUnknownID(t *testing.T) {
 	}
 }
 
+// The 400 body repeats a client-supplied id, so a huge id is cut short and quoted.
+func TestPrepareTruncatesEchoedID(t *testing.T) {
+	long := strings.Repeat("x", 1000)
+	_, err := newTestService(&fakeStore{}).Prepare(context.Background(), "q?", []string{long})
+	var bad *BadRequestError
+	if !errors.As(err, &bad) {
+		t.Fatalf("err = %v, want *BadRequestError", err)
+	}
+	if want := `"` + strings.Repeat("x", maxEchoedIDRunes) + `..."`; !strings.Contains(bad.Message, want) || len(bad.Message) > 200 {
+		t.Errorf("message has %d bytes, want the id quoted and cut to %d characters", len(bad.Message), maxEchoedIDRunes)
+	}
+}
+
 func TestPrepareAcceptsLimits(t *testing.T) {
 	store := &fakeStore{rows: map[string]domain.UploadRef{
 		"a": indexed("a", "h1"), "b": indexed("b", "h2"), "c": indexed("c", "h3"),

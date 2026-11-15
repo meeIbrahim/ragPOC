@@ -51,6 +51,7 @@ type fakeAsker struct {
 
 	mu      sync.Mutex
 	calls   int
+	yields  int
 	ctx     context.Context
 	hashes  []string
 	blocked chan struct{}
@@ -68,6 +69,9 @@ func (f *fakeAsker) AskStream(ctx context.Context, _ string, hashes []string) it
 	f.mu.Unlock()
 	return func(yield func(domain.AnswerPart, error) bool) {
 		for _, p := range f.parts {
+			f.mu.Lock()
+			f.yields++
+			f.mu.Unlock()
 			if !yield(p, nil) {
 				return
 			}
@@ -88,6 +92,12 @@ func (f *fakeAsker) callCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.calls
+}
+
+func (f *fakeAsker) yieldCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.yields
 }
 
 func (f *fakeAsker) context() context.Context {

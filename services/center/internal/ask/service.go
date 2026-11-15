@@ -28,6 +28,16 @@ type BadRequestError struct {
 
 func (e *BadRequestError) Error() string { return e.Message }
 
+// maxEchoedIDRunes caps how much of a client-supplied id a 400 body repeats back.
+const maxEchoedIDRunes = 64
+
+func truncate(s string, maxRunes int) string {
+	if utf8.RuneCountInString(s) <= maxRunes {
+		return s
+	}
+	return string([]rune(s)[:maxRunes]) + "..."
+}
+
 func badRequest(format string, args ...any) error {
 	return &BadRequestError{Message: fmt.Sprintf(format, args...)}
 }
@@ -82,7 +92,7 @@ func (s *Service) Prepare(ctx context.Context, question string, uploadIDs []stri
 	for _, id := range uploadIDs {
 		ref, ok := byID[id]
 		if !ok {
-			return Plan{}, badRequest("unknown upload_id: %s", id)
+			return Plan{}, badRequest("unknown upload_id: %q", truncate(id, maxEchoedIDRunes))
 		}
 		if ref.DocStatus == domain.DocumentIndexed && !seen[ref.Hash] {
 			seen[ref.Hash] = true

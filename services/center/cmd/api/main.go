@@ -170,7 +170,7 @@ func run() error {
 	askSvc := ask.NewService(store, ask.Limits{MaxQueryChars: cfg.RAG.MaxQueryChars, MaxDocumentIDs: cfg.RAG.MaxDocumentIDs})
 	server := newServer(func(askShutdown context.Context) http.Handler {
 		askHandlers := ask.NewHandlers(askSvc, ragClient, askShutdown, logger)
-		return httpapi.NewRouter(svc, askHandlers, logger, cfg.Ingestion.AllowedExtensions)
+		return httpapi.NewRouter(svc, askHandlers.Ask, logger, cfg.Ingestion.AllowedExtensions)
 	})
 	shutdownDone := make(chan struct{})
 	go func() {

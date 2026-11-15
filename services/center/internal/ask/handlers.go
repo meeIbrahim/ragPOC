@@ -52,7 +52,7 @@ func NewHandlers(svc *Service, asker Asker, shutdown context.Context, logger *sl
 	return &Handlers{svc: svc, asker: asker, shutdown: shutdown, logger: logger, now: time.Now}
 }
 
-type AskRequest struct {
+type askBody struct {
 	Question  string   `json:"question"`
 	UploadIDs []string `json:"upload_ids"`
 }
@@ -61,7 +61,7 @@ type AskRequest struct {
 // server-sent events: sources, deltas, then done, or one error event.
 func (h *Handlers) Ask(w http.ResponseWriter, r *http.Request) {
 	start := h.now()
-	req, ok := decodeAskRequest(w, r)
+	req, ok := decodeAskBody(w, r)
 	if !ok {
 		return
 	}
@@ -93,10 +93,10 @@ func (h *Handlers) Ask(w http.ResponseWriter, r *http.Request) {
 	)
 }
 
-func decodeAskRequest(w http.ResponseWriter, r *http.Request) (AskRequest, bool) {
+func decodeAskBody(w http.ResponseWriter, r *http.Request) (askBody, bool) {
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
 	dec.DisallowUnknownFields()
-	var req AskRequest
+	var req askBody
 	if err := dec.Decode(&req); err != nil {
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {
@@ -104,11 +104,11 @@ func decodeAskRequest(w http.ResponseWriter, r *http.Request) (AskRequest, bool)
 		} else {
 			http.Error(w, "invalid JSON body", http.StatusBadRequest)
 		}
-		return AskRequest{}, false
+		return askBody{}, false
 	}
 	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		http.Error(w, "invalid JSON body: one object expected", http.StatusBadRequest)
-		return AskRequest{}, false
+		return askBody{}, false
 	}
 	return req, true
 }

@@ -348,3 +348,71 @@ func TestAskLogLine(t *testing.T) {
 		}
 	}
 }
+
+// A stream with no message at all breaks the sources-first contract (PRD L16): the browser gets
+// an INTERNAL error, never a done without sources.
+func TestAskEmptyStreamIsInternalError(t *testing.T) {
+	hs := newHarness(t, newFakeAsker())
+	rec := hs.do(`{"question":"q?"}`)
+	evs := parseSSE(t, rec.Body.String())
+	if len(evs) != 1 {
+		t.Fatalf("events = %s, want exactly one error event", eventNames(evs))
+	}
+	if p := errorEvent(t, evs); p.Code != "INTERNAL" {
+		t.Errorf("code = %s, want INTERNAL", p.Code)
+	}
+	if !strings.Contains(hs.logs.String(), `"outcome":"INTERNAL"`) {
+		t.Errorf("log %s: want outcome INTERNAL", hs.logs.String())
+	}
+}
+
+// failingWriter accepts the first okWrites body writes, then fails every write, like a
+// connection the client has closed. It supports flushing like a real ResponseWriter.
+type failingWriter struct {
+	header   http.Header
+	okWrites int
+	writes   int
+}
+
+func (w *failingWriter) Header() http.Header { return w.header }
+func (w *failingWriter) WriteHeader(int)     {}
+func (w *failingWriter) Flush()              {}
+func (w *failingWriter) Write(b []byte) (int, error) {
+	w.writes++
+	if w.writes > w.okWrites {
+		return 0, errors.New("broken pipe")
+	}
+	return len(b), nil
+}
+
+// A failed write means the client is gone: the handler must stop reading the answer at once,
+// which cancels the RAG call, instead of draining the rest of the stream.
+func TestAskStopsOnWriteFailure(t *testing.T) {
+	asker := newFakeAsker(sources(), delta("one"), delta("two"), delta("three"))
+	hs := newHarness(t, asker)
+	w := &failingWriter{header: http.Header{}, okWrites: 1} // sources written, first delta fails
+	hs.h.Ask(w, askRequest(context.Background(), `{"question":"q?"}`))
+
+	if got := asker.yieldCount(); got != 2 {
+		t.Errorf("asker yielded %d parts, want 2: the handler kept reading after a failed write", got)
+	}
+	if asker.context().Err() == nil {
+		t.Error("asker context still live after a failed write: Groq would keep generating")
+	}
+	if !strings.Contains(hs.logs.String(), `"outcome":"client_gone"`) {
+		t.Errorf("log %s: want outcome client_gone", hs.logs.String())
+	}
+}
+
+// The short-circuit stream stops writing once the client is gone too.
+func TestAskShortCircuitStopsOnWriteFailure(t *testing.T) {
+	hs := newHarness(t, newFakeAsker())
+	w := &failingWriter{header: http.Header{}, okWrites: 0}
+	hs.h.Ask(w, askRequest(context.Background(), `{"question":"q?","upload_ids":["up-processing"]}`))
+	if w.writes != 1 {
+		t.Errorf("%d writes, want 1: writing must stop at the first failure", w.writes)
+	}
+	if !strings.Contains(hs.logs.String(), `"outcome":"client_gone"`) {
+		t.Errorf("log %s: want outcome client_gone", hs.logs.String())
+	}
+}

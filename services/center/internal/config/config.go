@@ -252,7 +252,9 @@ func (c *Config) Validate() error {
 	if c.RAG.MaxDocumentIDs < 1 {
 		add("rag.max_document_ids must be >= 1")
 	}
-	if c.Go.Ask.Deadline <= c.RAG.CallTimeout {
+	if c.Go.Ask.Deadline <= 0 {
+		add("go.ask.deadline must be > 0")
+	} else if c.Go.Ask.Deadline <= c.RAG.CallTimeout {
 		add("go.ask.deadline (%v) must exceed rag.call_timeout (%v)", c.Go.Ask.Deadline.Std(), c.RAG.CallTimeout.Std())
 	}
 

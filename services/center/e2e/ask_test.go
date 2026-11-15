@@ -10,10 +10,13 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"center-service/internal/ask"
 )
 
-// Matches internal/ask.NoRelevantAnswer, which a unit test ties to the Python constant.
-const noRelevantAnswer = "No relevant information was found in the indexed documents."
+// unreachableBound is how fast an ask must fail when rag-server is not running: the dial fails
+// at once, so anything near [go.ask].deadline means the call waited instead of failing.
+const unreachableBound = 30 * time.Second
 
 // postAsk sends a POST /ask and returns the status, content type and whole body. The client
 // timeout allows the full [go.ask].deadline, so a hung stream fails on its own assertion.
@@ -61,7 +64,7 @@ func testAskShortCircuit(t *testing.T) {
 
 	code, ctype, body := postAsk(t, `{"question":"What is this?","upload_ids":["`+id+`"]}`)
 	want := "event: sources\ndata: {\"sources\":[]}\n\n" +
-		"event: delta\ndata: {\"text\":\"" + noRelevantAnswer + "\"}\n\n" +
+		"event: delta\ndata: {\"text\":\"" + ask.NoRelevantAnswer + "\"}\n\n" +
 		"event: done\ndata: {}\n\n"
 	if code != http.StatusOK || ctype != "text/event-stream" || body != want {
 		t.Fatalf("status %d, content type %q, body\n%q\nwant\n%q", code, ctype, body, want)
@@ -79,7 +82,7 @@ func testAskUnavailable(t *testing.T) {
 	if code != http.StatusOK || ctype != "text/event-stream" || body != want {
 		t.Fatalf("status %d, content type %q, body\n%q\nwant\n%q", code, ctype, body, want)
 	}
-	if took >= cfg.Go.Ask.Deadline.Std() {
-		t.Errorf("took %v, want an unreachable rag-server to fail before [go.ask].deadline (%v)", took, cfg.Go.Ask.Deadline.Std())
+	if took >= unreachableBound {
+		t.Errorf("took %v, want an unreachable rag-server to fail within %v, not wait toward [go.ask].deadline", took, unreachableBound)
 	}
 }
