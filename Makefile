@@ -1,6 +1,8 @@
 .PHONY: grpc-generate run_migrations run_worker run_server reset_index eval test test-integration e2e e2e-faults up stack down go_migrate go_migrate_down
 
 # gRPC
+# Go stubs: buf and both protoc plugins are pinned in services/center/tools/go.mod (a separate
+# module, so the service image never downloads them) and run through `go tool`.
 # The proto's own directory is the include root: with -I./protos, protoc writes
 # `from rag.v1 import rag_pb2`, which resolves to this service's `rag` package and fails. The
 # sed turns the bare `import rag_pb2` into an import from the `generated` package.
@@ -14,6 +16,7 @@ grpc-generate:
 	sed -i.bak 's/^import rag_pb2 as rag__pb2$$/from generated import rag_pb2 as rag__pb2/' \
 		services/rag-service/src/generated/rag_pb2_grpc.py
 	rm services/rag-service/src/generated/rag_pb2_grpc.py.bak
+	cd services/center/tools && go tool buf generate ../../../protos --template ../../../protos/buf.gen.yaml
 
 # Needs Qdrant (`make up`); needs no Ollama and leaves the stack running. MinIO buckets are
 # created by `make go_migrate`.
