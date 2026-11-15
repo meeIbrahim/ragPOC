@@ -22,12 +22,9 @@ import (
 	ragv1 "center-service/internal/gen/ragv1"
 )
 
-// Message is one item of an answer stream. The first message carries only Sources (a non-nil,
-// possibly empty slice); every later message carries only a Delta of the answer text.
-type Message struct {
-	Sources []domain.Source
-	Delta   string
-}
+// Message is one item of an answer stream (see domain.AnswerPart). It is an alias so the ask
+// package can name it without importing this adapter.
+type Message = domain.AnswerPart
 
 type Client struct {
 	conn     *grpc.ClientConn

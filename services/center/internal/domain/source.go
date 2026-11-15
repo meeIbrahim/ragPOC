@@ -16,3 +16,10 @@ type UploadRef struct {
 	Hash      string
 	DocStatus DocumentStatus
 }
+
+// AnswerPart is one item of an answer stream. The first part carries only Sources (a non-nil,
+// possibly empty slice); every later part carries only a Delta of the answer text.
+type AnswerPart struct {
+	Sources []Source
+	Delta   string
+}
