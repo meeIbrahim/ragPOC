@@ -24,6 +24,7 @@ dir="./sqlite_db"
 url="http://localhost:6333"
 
 [rag_grpc]
+host="rag-server"
 port=50051
 
 [rag]
@@ -35,6 +36,8 @@ top_k=5
 chunk_size=0
 chunk_overlap=0
 call_timeout="60s"
+max_query_chars=2000
+max_document_ids=100
 
 [rag.consumer]
 job_timeout="15m"
@@ -60,6 +63,9 @@ allowed_extensions=[".pdf", ".txt", ".md"]
 [go]
 port=8080
 sqlite_dir="./go_sqlite_db"
+
+[go.ask]
+deadline="3m"
 
 [go.status_consumer]
 entry_timeout="5s"
@@ -100,8 +106,14 @@ func TestLoadParsesAllSections(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.RAGGRPC.Port != 50051 {
-		t.Errorf("RAGGRPC.Port = %d", cfg.RAGGRPC.Port)
+	if cfg.RAGGRPC.Port != 50051 || cfg.RAGGRPC.Host != "rag-server" {
+		t.Errorf("RAGGRPC = %s:%d", cfg.RAGGRPC.Host, cfg.RAGGRPC.Port)
+	}
+	if cfg.Go.Ask.Deadline.Std() != 3*time.Minute {
+		t.Errorf("Go.Ask.Deadline = %v", cfg.Go.Ask.Deadline.Std())
+	}
+	if cfg.RAG.MaxQueryChars != 2000 || cfg.RAG.MaxDocumentIDs != 100 {
+		t.Errorf("RAG query limits = %d/%d", cfg.RAG.MaxQueryChars, cfg.RAG.MaxDocumentIDs)
 	}
 	if cfg.RAG.EmbeddingModel != "qwen3-embedding" || cfg.RAG.EmbeddingDim != 4096 {
 		t.Errorf("RAG embedding = %q/%d", cfg.RAG.EmbeddingModel, cfg.RAG.EmbeddingDim)
@@ -150,6 +162,10 @@ func TestLoadRealConfig(t *testing.T) {
 	if len(cfg.UnknownKeys) != 0 {
 		t.Fatalf("repo config.toml has keys Go does not model: %v", cfg.UnknownKeys)
 	}
+	// The host dev loop runs rag.server on the host, not in compose.
+	if cfg.RAGGRPC.Host != "localhost" {
+		t.Errorf("rag_grpc.host = %q, the host dev loop dials localhost", cfg.RAGGRPC.Host)
+	}
 }
 
 func TestLoadMissingFile(t *testing.T) {
@@ -189,7 +205,9 @@ poison_threshold=0`, "go.status_consumer.poison_threshold"},
 		{"extension with second dot", `allowed_extensions=[".pdf", ".txt", ".md"]`, `allowed_extensions=[".tar.gz"]`, "allowed_extensions"},
 		{"extension with space", `allowed_extensions=[".pdf", ".txt", ".md"]`, `allowed_extensions=[".p df"]`, "allowed_extensions"},
 		{"stale rag_grpc section", `[rag_grpc]
+host="rag-server"
 port=50051`, `[server]
+host="rag-server"
 port=50051`, "rag_grpc.port"},
 		{"stale embedding_model key", `embedding_model="qwen3-embedding"`, `model="qwen3-embedding"`, "rag.embedding_model"},
 		{"zero call_timeout", `call_timeout="60s"`, `call_timeout="0s"`, "rag.call_timeout"},
@@ -225,6 +243,15 @@ port=50051`, "rag_grpc.port"},
 		{"outbox max_retries zero", `max_retries=4`, `max_retries=0`, "go.outbox.max_retries"},
 		{"outbox job_timeout == stale_threshold", `stale_threshold="30m"`, `stale_threshold="30s"`, "go.outbox.stale_threshold"},
 		{"outbox schema_version zero", `schema_version=1`, `schema_version=0`, "go.outbox.schema_version"},
+		{"missing rag_grpc host", `host="rag-server"`, ``, "rag_grpc.host"},
+		{"missing go.ask section", "[go.ask]\ndeadline=\"3m\"", ``, "go.ask.deadline"},
+		{"go.ask deadline zero", `deadline="3m"`, `deadline="0s"`, "go.ask.deadline"},
+		// The deadline bounds a whole stream of external calls, each bounded by call_timeout.
+		{"go.ask deadline == call_timeout", `deadline="3m"`, `deadline="60s"`, "go.ask.deadline"},
+		{"go.ask deadline < call_timeout", `deadline="3m"`, `deadline="30s"`, "go.ask.deadline"},
+		{"max_query_chars zero", `max_query_chars=2000`, `max_query_chars=0`, "rag.max_query_chars"},
+		{"missing max_query_chars", `max_query_chars=2000`, ``, "rag.max_query_chars"},
+		{"max_document_ids zero", `max_document_ids=100`, `max_document_ids=0`, "rag.max_document_ids"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -378,6 +405,12 @@ func TestDeployConfigsLoad(t *testing.T) {
 			// Inside the compose network every dependency is reached by service name.
 			if cfg.Minio.URL != "minio:9000" || cfg.Redis.Host != "redis" || cfg.Qdrant.URL != "http://qdrant:6333" {
 				t.Errorf("hostnames = %s / %s / %s", cfg.Minio.URL, cfg.Redis.Host, cfg.Qdrant.URL)
+			}
+			if cfg.RAGGRPC.Host != "rag-server" {
+				t.Errorf("rag_grpc.host = %q, compose reaches the RAG server by service name", cfg.RAGGRPC.Host)
+			}
+			if cfg.Go.Ask.Deadline.Std() != 3*time.Minute {
+				t.Errorf("go.ask.deadline = %v", cfg.Go.Ask.Deadline.Std())
 			}
 			if cfg.Ingestion.MaxAttempts != 3 {
 				t.Errorf("max_attempts = %d, the PRD acceptance checks assume 3", cfg.Ingestion.MaxAttempts)

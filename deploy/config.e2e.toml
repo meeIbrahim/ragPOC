@@ -20,6 +20,7 @@ url="http://qdrant:6333"
 url="http://host.docker.internal:11434"
 
 [rag_grpc]
+host="rag-server"
 port=50051
 max_workers=8
 
@@ -84,6 +85,9 @@ allowed_extensions=[".pdf", ".txt", ".md"]
 [go]
 port=8080
 sqlite_dir="/data/go"
+
+[go.ask]
+deadline="3m"
 
 [go.status_consumer]
 entry_timeout="5s"
