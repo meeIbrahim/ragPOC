@@ -1,6 +1,7 @@
 # RAG POC: Product Requirements Document
 
-Date: 2026-10-14. Status: APPROVED rev 2 (owner sign-off 2026-10-14; review decisions applied). Branch at writing: `rough` (`8d3762f`).
+Date: 2026-10-14. Status: APPROVED rev 3 (rev 2 owner sign-off 2026-10-14 with review decisions applied; rev 3 sign-off 2026-11-12). Branch at writing: `rough` (`8d3762f`).
+Rev 3 (2026-11-12, APPROVED, owner sign-off 2026-11-12): Phase 3 rewritten as the backend a web UI needs, Phase 4 (web UI) added. Source: epic `.planning/epics/phase-3-query-and-ui.md`.
 Audience: the owner and the coding agents that implement it. Not client-facing.
 
 Relationship to other docs: `.claude/doc/rag-poc-design.md` is the as-built snapshot (state machines, tables, tests list). This PRD is the forward spec. Where they differ, **this PRD wins**. Section 9 lists the corrections to the design doc. The owner moves this file to a tracked `docs/` path once final; until then agents must run in the main checkout (worktrees do not see `.claude/`).
@@ -13,15 +14,16 @@ Relationship to other docs: `.claude/doc/rag-poc-design.md` is the as-built snap
 Prove an end-to-end document RAG pipeline across two independent services: a Go "center" service (REST, storage, orchestration) and a plug-and-play Python RAG service (ingest, retrieval, generation). The two meet only at defined contracts (section 4).
 
 ### 1.2 Objectives
-- A user uploads a document, polls its status, and can ask questions about it with a streamed answer and sources.
+- A user uploads a document, polls its status, and can ask questions about it with a streamed answer and sources, from a browser.
+- A credible single-screen web UI for team and client demos (laptop width, single user).
 - The RAG service is swappable: it depends on no Go code or Go storage layout beyond the contracts and the shared `config.toml`.
 - Delivery is at-least-once with idempotent consumers.
 
 ### 1.3 In scope
-Upload, hashing, outbox, ingestion events, status events, Go status consumer, Python RAG service (ingest and query), gRPC query contract, Dockerfiles and a full-system `docker-compose.yml` for local runs and e2e, test strategy, a small retrieval eval, phased delivery.
+Upload, hashing, outbox, ingestion events, status events, Go status consumer, Python RAG service (ingest and query), gRPC query contract, Go query proxy (HTTP + SSE), document list API, a single-page web UI served by Go, Dockerfiles and a full-system `docker-compose.yml` for local runs and e2e, test strategy, a small retrieval eval, phased delivery.
 
 ### 1.4 Out of scope (v1)
-Auth and users, OCR, multi-turn chat, per-user scoping, Office formats, document revision linking, dead-letter replay, observability stack, CI and lint, production deployment, consumer heartbeat. See section 8.
+Auth and users, OCR, multi-turn chat, per-user scoping, Office formats, document revision linking, dead-letter replay, observability stack, CI and lint, production deployment, consumer heartbeat, mobile layouts. See section 8.
 
 ---
 
@@ -48,6 +50,8 @@ Auth and users, OCR, multi-turn chat, per-user scoping, Office formats, document
 | L17 | Ack order (both services): process, then publish or commit, then `XACK`. |
 | L18 | Walking skeleton first (Phase 0), then real RAG (Phase 1). |
 | L19 | Stream consumer names are `<host>/<kind>/<uuid>`, new on every process start (`ingest` for Python, `status` for Go), matching the Go worker id convention. A restarted process never drains a previous name's pending list; those entries return only via `XAUTOCLAIM`. Dead consumers are cleaned up (section 5.3). |
+| L20 | Web UI = Vite + React + TypeScript SPA, built to static files and served by Go from the same origin (no CORS on Go). The browser calls Go for every API call and the SSE answer stream; file bytes still go browser to MinIO through the presigned PUT. Laptop width only, single user. |
+| L21 | The browser never sees content hashes. It names documents by upload id; Go maps ids to hashes for `document_ids`. Duplicate uploads appear as one document. |
 
 ---
 
@@ -55,9 +59,9 @@ Auth and users, OCR, multi-turn chat, per-user scoping, Office formats, document
 
 ```mermaid
 flowchart LR
-    Client["Client (HTTP)"]
+    Client["Browser SPA (served by Go)"]
     subgraph Go["Go center"]
-        API["REST: POST /upload, POST /upload/{id}/confirm, GET /upload/{id}"]
+        API["HTTP: upload, GET /documents, POST /ask (SSE), static UI"]
         HW["Hash workers + sweeper"]
         OW["Outbox workers + sweeper"]
         SC["Status consumer (new)"]
@@ -92,7 +96,7 @@ flowchart LR
     PC --> Ollama
     PC -->|"XADD"| S2
     S2 -->|"XREADGROUP"| SC --> DB
-    Client -. "Phase 3" .-> API -. "gRPC stream" .-> PS
+    API -->|"gRPC AskStream"| PS
     PS --> Q
     PS --> Ollama
     PS --> Groq
@@ -136,6 +140,8 @@ Stream: `[redis].status_stream` (`ingest.status`). Entry fields: `event_type="In
 | `created_at`, `schema_version` | | |
 
 Go discards and acks malformed payloads, unknown `schema_version`, unknown `status`, and unknown `reason`. Every `reason` listed above must be known to Go.
+
+From Phase 3, Go stores `reason` in `document_store.failure_reason` (migration `0004`) and returns it in the HTTP API. `detail` stays log-only.
 
 ### 4.3 Status application rules (Go)
 Attempts are 0-based; `max_attempts` from `[ingestion]`. **Every write to `document_store` sets `updated_at`** (B2 reconciliation relies on it).
@@ -189,7 +195,11 @@ poison_threshold=3
 consumer_cleanup_idle="1h"
 
 [rag_grpc]                           # renamed from [server]
+host="localhost"                     # Phase 3: Go dials rag.server here (`rag-server` in compose)
 port=50051
+
+[minio]                              # existing keys unchanged
+public_url="http://localhost:9000"  # Phase 3: host the browser can reach; used only to sign presigned URLs
 
 [redis]                              # existing keys unchanged; `consumer_group` is Python's ingest group
 status_stream="ingest.status"
@@ -198,6 +208,9 @@ status_consumer_group="center-status"
 [ingestion]
 max_attempts=3                       # document ingest attempts; independent of the outbox and hash worker MaxRetries in code
 allowed_extensions=[".pdf", ".txt", ".md"]
+
+[go.ask]                             # Phase 3
+deadline="3m"                        # bounds a whole AskStream; must exceed [rag].call_timeout
 
 [go.status_consumer]
 entry_timeout="5s"
@@ -209,6 +222,18 @@ consumer_cleanup_idle="1h"
 Env only: `GROQ_API_KEY`. Startup validation (both services): reject config where `job_timeout + watchdog_grace >= min_idle`, or `consumer_cleanup_idle <= job_timeout`.
 
 ---
+
+### 4.6 HTTP API (Go, browser-facing)
+Same origin as the UI. JSON uses `snake_case`. Exact request and response shapes are fixed in the Phase 3 feature specs; this table fixes the surface.
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /upload` | Unchanged. Returns the upload id and a presigned PUT URL signed with `[minio].public_url`. |
+| `POST /upload/{id}/confirm` | Unchanged. |
+| `GET /upload/{id}` | Unchanged, plus `failure_reason` when the document is `FAILED`. |
+| `GET /documents` | New. Documents newest first: id (an upload id), filename, status, `failure_reason`, created time. One entry per content hash; uploads not hashed yet appear as pending entries. |
+| `POST /ask` | New. Body: question and optional upload ids. Response: `text/event-stream` mapped from `AskStream`: message 1 to `event: sources`, later messages to `event: delta`, then `event: done`; failures end the stream with `event: error`. A client disconnect cancels the gRPC call. |
+| `GET /` and static assets | New. The built SPA. |
 
 ## 5. Python RAG service requirements
 
@@ -280,7 +305,7 @@ Retrieved chunks and the question are sent to Groq (external). **Do not ingest c
 - `events/models.go`: fix the comment on `ID` (Python dedupes on `hash`; Go's CAS key is `(hash, retries)`).
 - `main.go`: replace `log.Fatalf` on server error so deferred cleanups run.
 - Remove or use `outbox.ErrDocumentNotFound` and `outbox.ErrLostClaim`.
-- Query proxy: Phase 3 (section 7).
+- Query proxy, document list, failure reason and static UI serving: Phase 3 (section 7).
 
 ---
 
@@ -321,8 +346,35 @@ Done when:
 ### Phase 2: hardening and test backfill
 Deliver: `rag-poc-design.md` 4.2 tests for existing Go code (store SQL with `-race`, workers, service, handlers), remaining fixes from section 6.2, failure-injection e2e (design doc 4.4). May start any time after Phase 0 test infra exists.
 
-### Phase 3: Go query proxy
-Resolve first: client-disconnect behaviour, querying a `PROCESSING` document, is Go a dumb pipe. Then Go gRPC stubs, HTTP SSE mapped to `AskStream` (message 1 to `event: sources`, rest to `event: delta`).
+### Phase 3: backend for the web UI
+Resolve first, in the feature specs: client-disconnect behaviour, querying a `PROCESSING` document, whether Go is a dumb pipe (feature 4); which upload id represents a merged document (feature 3).
+
+Deliver (epic features 1 to 5):
+- Go gRPC client: Go stubs from `rag.proto`, `[rag_grpc].host`, `[go.ask].deadline` per ask (`[rag].call_timeout` stays the per-external-call bound in Python), compose wiring to `rag-server`.
+- Failure reason: migration `0004` adds `document_store.failure_reason`; `ApplyFailed` stores it; `GET /upload/{id}` returns it.
+- `GET /documents` (section 4.6), duplicates merged.
+- `POST /ask` over SSE (section 4.6); upload ids mapped to hashes; disconnect cancels the gRPC call; shutdown ends open streams cleanly.
+- Browser readiness: Go serves static files from the same origin; presigned URLs signed with `[minio].public_url`; MinIO CORS allows the UI origin.
+
+Done when:
+- From `curl` against compose: `POST /ask` streams `sources`, `delta`s and `done`; filtering by upload ids works; an upload id with no indexed document gets the "nothing relevant" answer, not an error.
+- Closing the connection mid-answer cancels the gRPC call (visible in Python logs).
+- Python, Groq or Ollama down gives `event: error` with an `UNAVAILABLE` code; an empty question gives HTTP 400.
+- A presigned URL from compose works with `curl -X PUT` from the host.
+- An unsupported type shows `FAILED` with `failure_reason=UNSUPPORTED_TYPE` in `GET /upload/{id}` and `GET /documents`.
+- New Go code has unit tests; `make e2e` and `make e2e-faults` still pass.
+
+### Phase 4: web UI
+Deliver (epic features 6 to 8):
+- Design: `/spartan:ux prototype` with design tokens, one laptop-width screen (documents panel and ask panel), and every state: empty, uploading, processing, failed with reason, nothing relevant, `UNAVAILABLE` with retry.
+- Vite + React + TypeScript SPA: upload, live status by polling, select documents, ask with sources shown first and the answer streamed.
+- The SPA built into the Go image, so one `docker compose up` serves everything (Ollama stays on the host, B5). A demo script.
+
+Done when:
+- In a browser: upload a `.pdf`, `.txt` and `.md`, each reaches `INDEXED` with live status; a duplicate shows as one document; an unsupported type shows a readable failure.
+- Ask across all documents and across a selection; sources appear before the answer, which streams in; a question with nothing relevant shows a clear empty answer.
+- With Groq unreachable, the UI shows a retry state, not a broken page.
+- The demo script runs end to end without errors. Demos use public or synthetic documents only: questions and retrieved chunks go to Groq.
 
 ---
 
@@ -341,6 +393,8 @@ Resolve first: client-disconnect behaviour, querying a `PROCESSING` document, is
 | B9 | Document revision linking (stable document id above the content hash). |
 | B10 | Rename `pdf-fixed` collection (now holds txt and md too); needs a migration. |
 | B11 | Consumer heartbeat, to allow jobs over 15m and faster crash recovery (`min_idle` back to about 60s). Design: separate thread every `heartbeat_interval <= min_idle/3`; renew with an atomic Lua check-and-claim (`XPENDING <stream> <group> <id> <id> 1 <me>`, then `XCLAIM <stream> <group> <me> 0 <id> JUSTID` only if owned), so it never steals an entry back; `JUSTID` is mandatory on the heartbeat and forbidden on the recovery `XAUTOCLAIM`; on lost ownership continue the job and log (`XACK` ignores ownership and the result is idempotent); heartbeat errors never kill the job; stop renewing at `job_timeout`. |
+| B12 | Mobile and tablet layouts for the web UI. |
+| B13 | Multi-user UI (depends on B8). |
 
 ---
 
@@ -359,4 +413,4 @@ Resolve first: client-disconnect behaviour, querying a `PROCESSING` document, is
 Design doc 3.4 items 1 to 10 remain, except: item 1 (retries increment) is closed by section 4.3; items 6, 7, 8 are Phase 2 fixes; item 2 maps to backlog B1; items 3, 4, 5 map to B3; item 9 is closed by section 4.2 using `attempts`; item 10 is split: Dockerfiles are Phase 0, CI and lint are B5. Also: `config.toml` is tracked and holds dev MinIO credentials; use env vars or a secrets manager for anything shared.
 
 ## 11. Open questions
-None blocking Phase 0 or Phase 1. Values chosen during Phase 1 and recorded in `config.toml`: `embedding_dim` (from the pulled `qwen3-embedding` tag), `chunk_size`, `chunk_overlap`, `top_k`, and the retrieval prompt template.
+None blocking Phase 0 or Phase 1. Phase 3 questions are listed under Phase 3 and resolved in the feature specs. Values chosen during Phase 1 and recorded in `config.toml`: `embedding_dim` (from the pulled `qwen3-embedding` tag), `chunk_size`, `chunk_overlap`, `top_k`, and the retrieval prompt template.
