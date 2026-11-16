@@ -51,7 +51,8 @@ func newRouter(t *testing.T) (http.Handler, *fakeStore, *fakeBlob) {
 	store, blob := &fakeStore{}, &fakeBlob{}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	svc := upload.NewService(store, blob, logger)
-	return httpapi.NewRouter(svc, logger, []string{".pdf", ".txt", ".md"}), store, blob
+	// These tests never hit POST /ask.
+	return httpapi.NewRouter(svc, http.NotFound, logger, []string{".pdf", ".txt", ".md"}), store, blob
 }
 
 func postUpload(h http.Handler, body string) *httptest.ResponseRecorder {

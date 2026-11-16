@@ -1,0 +1,17 @@
+# Go stubs for services/center. `make grpc-generate` runs buf from services/center/tools (the
+# modfile that pins buf and both plugins), so `out` is relative to that directory and the plugins
+# run through `go tool`. Python stubs stay on grpc_tools (see the Makefile).
+version: v2
+managed:
+  enabled: true
+  override:
+    # rag.proto has no go_package; set it here so the proto stays language-neutral.
+    - file_option: go_package
+      value: center-service/internal/gen/ragv1
+plugins:
+  - local: ["go", "tool", "protoc-gen-go"]
+    out: ..
+    opt: module=center-service
+  - local: ["go", "tool", "protoc-gen-go-grpc"]
+    out: ..
+    opt: module=center-service

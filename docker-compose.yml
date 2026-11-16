@@ -158,6 +158,14 @@ services:
     volumes:
       - ./deploy/config.compose.toml:/config/config.toml:ro
     init: true
+    # The port opens only after the startup checks (Groq key, collection, embedding size), so an
+    # accepted connection means the server is ready. Without this, `up --wait` returns while the
+    # server still starts and the first ask gets `connection refused` (UNAVAILABLE).
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 50051), 2).close()"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
     depends_on:
       rag-migrate:
         condition: service_completed_successfully

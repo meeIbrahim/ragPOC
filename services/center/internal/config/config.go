@@ -77,7 +77,9 @@ type OllamaConfig struct {
 }
 
 type RAGGRPCConfig struct {
-	Port int `toml:"port"`
+	// Host is where Go dials rag.server: localhost on the host dev loop, rag-server in compose.
+	Host string `toml:"host"`
+	Port int    `toml:"port"`
 	// MaxWorkers is the Python gRPC server's thread pool size. Not used or validated by Go.
 	MaxWorkers int `toml:"max_workers"`
 }
@@ -93,14 +95,17 @@ type RAGConfig struct {
 	// CallTimeout bounds each external call the RAG service makes (MinIO, Ollama, Qdrant, Groq).
 	CallTimeout Duration `toml:"call_timeout"`
 
+	// Query limits. Python enforces them on every ask; POST /ask checks them too, so bad input
+	// gets an HTTP 400 before a stream starts.
+	MaxQueryChars  int `toml:"max_query_chars"`
+	MaxDocumentIDs int `toml:"max_document_ids"`
+
 	// Read only by the Python RAG service (retrieval, embedding and generation). Go models them
 	// so the shared file has no unknown keys; it does not use or validate them.
 	MinScore         float64 `toml:"min_score"`
 	EmbedBatchSize   int     `toml:"embed_batch_size"`
 	QueryInstruction string  `toml:"query_instruction"`
 	ReasoningEffort  string  `toml:"reasoning_effort"`
-	MaxQueryChars    int     `toml:"max_query_chars"`
-	MaxDocumentIDs   int     `toml:"max_document_ids"`
 	SystemPrompt     string  `toml:"system_prompt"`
 
 	Consumer RAGConsumerConfig `toml:"consumer"`
@@ -143,9 +148,16 @@ type IngestionConfig struct {
 type GoConfig struct {
 	Port           int                  `toml:"port"`
 	SQLiteDir      string               `toml:"sqlite_dir"`
+	Ask            AskConfig            `toml:"ask"`
 	StatusConsumer StatusConsumerConfig `toml:"status_consumer"`
 	Hashing        WorkerConfig         `toml:"hashing"`
 	Outbox         OutboxConfig         `toml:"outbox"`
+}
+
+type AskConfig struct {
+	// Deadline bounds one whole AskStream: retrieval plus the full streamed answer. Each
+	// external call inside it is bounded by [rag].call_timeout, so it must be longer.
+	Deadline Duration `toml:"deadline"`
 }
 
 // WorkerConfig tunes a polling worker pool and its recovery sweep ([go.hashing], [go.outbox]).
@@ -202,6 +214,7 @@ func (c *Config) Validate() error {
 		{"minio.upload_bucket", c.Minio.UploadBucket},
 		{"minio.ingestion_bucket", c.Minio.IngestionBucket},
 		{"redis.host", c.Redis.Host},
+		{"rag_grpc.host", c.RAGGRPC.Host},
 		{"redis.stream", c.Redis.Stream},
 		{"go.sqlite_dir", c.Go.SQLiteDir},
 	} {
@@ -232,6 +245,17 @@ func (c *Config) Validate() error {
 	}
 	if c.RAG.CallTimeout <= 0 {
 		add("rag.call_timeout must be > 0")
+	}
+	if c.RAG.MaxQueryChars < 1 {
+		add("rag.max_query_chars must be >= 1")
+	}
+	if c.RAG.MaxDocumentIDs < 1 {
+		add("rag.max_document_ids must be >= 1")
+	}
+	if c.Go.Ask.Deadline <= 0 {
+		add("go.ask.deadline must be > 0")
+	} else if c.Go.Ask.Deadline <= c.RAG.CallTimeout {
+		add("go.ask.deadline (%v) must exceed rag.call_timeout (%v)", c.Go.Ask.Deadline.Std(), c.RAG.CallTimeout.Std())
 	}
 
 	rc := c.RAG.Consumer

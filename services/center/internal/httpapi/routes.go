@@ -1,15 +1,16 @@
 package httpapi
 
 import (
-	"center-service/internal/upload"
 	"log/slog"
 	"net/http"
+
+	"center-service/internal/upload"
 )
 
 // NewRouter builds the root mux, dispatching by leading path prefix to each
 // service's own route table (each service's Routes() sees paths with its
 // prefix already stripped).
-func NewRouter(svc *upload.Service, logger *slog.Logger, allowedExtensions []string) http.Handler {
+func NewRouter(svc *upload.Service, askHandler http.HandlerFunc, logger *slog.Logger, allowedExtensions []string) http.Handler {
 	uploadHandlers := upload.NewHandlers(svc, logger, allowedExtensions)
 
 	mux := http.NewServeMux()
@@ -17,5 +18,6 @@ func NewRouter(svc *upload.Service, logger *slog.Logger, allowedExtensions []str
 	// path, which the inner mux 301-redirects to "/" instead of matching "POST /".
 	mux.HandleFunc("POST /upload", uploadHandlers.CreateUpload)
 	mux.Handle("/upload/", http.StripPrefix("/upload", uploadHandlers.Routes()))
+	mux.HandleFunc("POST /ask", askHandler)
 	return mux
 }

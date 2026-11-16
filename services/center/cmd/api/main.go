@@ -15,11 +15,13 @@ import (
 	"syscall"
 	"time"
 
+	"center-service/internal/ask"
 	"center-service/internal/config"
 	redisevents "center-service/internal/events/redis"
 	"center-service/internal/hashing"
 	"center-service/internal/httpapi"
 	"center-service/internal/outbox"
+	"center-service/internal/ragclient"
 	"center-service/internal/status"
 	"center-service/internal/storage/minio"
 	"center-service/internal/store/sqlite"
@@ -29,6 +31,9 @@ import (
 const (
 	hashWorkers   = 2
 	outboxWorkers = 2
+	// shutdownTimeout bounds http.Server.Shutdown. Open ask streams end at once on shutdown
+	// (see newServer), so it only has to cover in-flight short requests.
+	shutdownTimeout = 10 * time.Second
 )
 
 // The sqlite store and redis producer must satisfy the consumer-side interfaces the workers
@@ -40,6 +45,8 @@ var (
 	_ outbox.Producer = (*redisevents.Producer)(nil)
 	_ status.Store    = (*sqlite.Store)(nil)
 	_ status.Source   = (*redisevents.StatusSource)(nil)
+	_ ask.Store       = (*sqlite.Store)(nil)
+	_ ask.Asker       = (*ragclient.Client)(nil)
 )
 
 func main() {
@@ -151,15 +158,25 @@ func run() error {
 		statusWorker.Run(ctx)
 	}()
 
-	svc := upload.NewService(store, minioClient, logger)
-	server := &http.Server{
-		Handler: httpapi.NewRouter(svc, logger, cfg.Ingestion.AllowedExtensions),
+	// Lazy: no connection until the first ask, so ingest never waits on rag-server.
+	ragClient, err := ragclient.New(*cfg)
+	if err != nil {
+		return fmt.Errorf("create rag client: %w", err)
 	}
+	// Deferred, so it closes when run returns: after Serve and Shutdown, once every stream ended.
+	defer ragClient.Close()
+
+	svc := upload.NewService(store, minioClient, logger)
+	askSvc := ask.NewService(store, ask.Limits{MaxQueryChars: cfg.RAG.MaxQueryChars, MaxDocumentIDs: cfg.RAG.MaxDocumentIDs})
+	server := newServer(func(askShutdown context.Context) http.Handler {
+		askHandlers := ask.NewHandlers(askSvc, ragClient, askShutdown, logger)
+		return httpapi.NewRouter(svc, askHandlers.Ask, logger, cfg.Ingestion.AllowedExtensions)
+	})
 	shutdownDone := make(chan struct{})
 	go func() {
 		defer close(shutdownDone)
 		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
 		if err := server.Shutdown(shutdownCtx); err != nil {
 			logger.Error("http shutdown", "err", err)
@@ -177,6 +194,16 @@ func run() error {
 	}
 	log.Printf("center service stopped")
 	return nil
+}
+
+// newServer builds the HTTP server with the handler from build. The context passed to build
+// is cancelled when Shutdown starts, which ends open POST /ask streams with an error event:
+// Shutdown waits for active connections, and a streaming answer can run for minutes.
+func newServer(build func(askShutdown context.Context) http.Handler) *http.Server {
+	askShutdown, cancelAsks := context.WithCancel(context.Background())
+	server := &http.Server{Handler: build(askShutdown)}
+	server.RegisterOnShutdown(cancelAsks)
+	return server
 }
 
 // fault is the e2e fault hook selected by CENTER_FAULT; the zero value runs no fault.

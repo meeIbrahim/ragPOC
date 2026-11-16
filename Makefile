@@ -1,6 +1,8 @@
 .PHONY: grpc-generate run_migrations run_worker run_server reset_index eval test test-integration e2e e2e-faults up stack down go_migrate go_migrate_down
 
 # gRPC
+# Go stubs: buf and both protoc plugins are pinned in services/center/tools/go.mod (a separate
+# module, so the service image never downloads them) and run through `go tool`.
 # The proto's own directory is the include root: with -I./protos, protoc writes
 # `from rag.v1 import rag_pb2`, which resolves to this service's `rag` package and fails. The
 # sed turns the bare `import rag_pb2` into an import from the `generated` package.
@@ -14,6 +16,7 @@ grpc-generate:
 	sed -i.bak 's/^import rag_pb2 as rag__pb2$$/from generated import rag_pb2 as rag__pb2/' \
 		services/rag-service/src/generated/rag_pb2_grpc.py
 	rm services/rag-service/src/generated/rag_pb2_grpc.py.bak
+	cd services/center/tools && go tool buf generate ../../../protos --template ../../../protos/buf.gen.yaml
 
 # Needs Qdrant (`make up`); needs no Ollama and leaves the stack running. MinIO buckets are
 # created by `make go_migrate`.
@@ -41,16 +44,20 @@ test:
 	cd services/center && go test -race ./...
 	cd services/rag-service && uv run pytest
 
-# Tests against the dev infra (`make up`: Redis, MinIO, Qdrant on localhost). Each test skips
-# when its service is not configured or not reachable. The MinIO test also needs MINIO_URL,
-# MINIO_ACCESS_KEY and MINIO_SECRET_KEY in your environment (not set here, to keep credentials
-# out of the Makefile).
+# Tests against the dev infra (`make up`: Redis and Qdrant on localhost; `make run_server` for
+# the rag.server test, which makes no Groq call). Each test skips when its service is not
+# configured or not reachable. The MinIO test runs against a throwaway MinIO with one-run random
+# credentials (scripts/with-throwaway-minio.sh, needs Docker), or against yours if MINIO_URL,
+# MINIO_ACCESS_KEY and MINIO_SECRET_KEY are already set.
 REDIS_ADDR ?= localhost:6379
 REDIS_URL ?= redis://localhost:6379/0
 QDRANT_URL ?= http://localhost:6333
+RAG_GRPC_ADDR ?= localhost:50051
 test-integration:
 	cd services/center && REDIS_ADDR=$(REDIS_ADDR) go test -race -count=1 -tags integration ./internal/events/redis/
-	cd services/rag-service && REDIS_URL=$(REDIS_URL) QDRANT_URL=$(QDRANT_URL) uv run pytest -m integration -rs
+	cd services/center && RAG_GRPC_ADDR=$(RAG_GRPC_ADDR) go test -race -count=1 -tags integration ./internal/ragclient/
+	cd services/rag-service && REDIS_URL=$(REDIS_URL) QDRANT_URL=$(QDRANT_URL) \
+		../../scripts/with-throwaway-minio.sh uv run pytest -m integration -rs
 
 # Compose e2e of the whole system in an isolated project (needs Docker, takes a few minutes).
 # `make e2e SCENARIOS="crash hang"` runs only those scenarios.

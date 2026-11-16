@@ -77,7 +77,8 @@ def test_loads_the_repo_config():
 
 def test_loads_every_deploy_config_when_present():
     for path in sorted((REPO_ROOT / "deploy").glob("*.toml")):
-        load(path)  # raises ConfigError if invalid
+        cfg = load(path)  # raises ConfigError if invalid
+        assert cfg.unknown_keys == (), f"{path.name}: {cfg.unknown_keys}"
 
 
 def test_parses_all_sections(tmp_path):
@@ -172,6 +173,12 @@ def test_get_config_is_cached(monkeypatch):
 def test_unknown_keys_are_listed_not_fatal(tmp_path):
     cfg = load(write(tmp_path, broken("top_k=5", 'top_k=5\nprompt_template="x"')))
     assert cfg.unknown_keys == ("rag.prompt_template",)
+
+
+# Go's dial target for this server; this service binds every interface and never reads it.
+def test_rag_grpc_host_is_not_reported_as_unknown(tmp_path):
+    body = broken("max_workers=8", 'max_workers=8\nhost="rag-server"')
+    assert load(write(tmp_path, body)).unknown_keys == ()
 
 
 def test_the_go_section_is_not_reported_as_unknown(tmp_path):
