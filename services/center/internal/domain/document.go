@@ -10,6 +10,10 @@ const (
 	DocumentFailed     DocumentStatus = "FAILED"
 )
 
+// ReasonUploadFailed is the failure reason for an upload that failed in hashing. Go derives it
+// from the intent state; it is never stored and Python never sends it.
+const ReasonUploadFailed = "UPLOAD_FAILED"
+
 type Document struct {
 	Hash           string
 	PermBucketPath string
@@ -17,6 +21,7 @@ type Document struct {
 	Size           int64
 	Status         DocumentStatus
 	Retries        int
+	FailureReason  *string // set only on a terminal FAILED
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
 }

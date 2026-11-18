@@ -133,6 +133,20 @@ func TestGetDocumentByHash(t *testing.T) {
 		t.Errorf("document = %+v; want every column read back", d)
 	}
 
+	if d.FailureReason != nil {
+		t.Errorf("failure_reason = %q; want nil for a NULL column", *d.FailureReason)
+	}
+
+	const failed = "fa11ed"
+	insertDoc(t, db, failed, domain.DocumentFailed, 3)
+	if _, err := db.Exec(`UPDATE document_store SET failure_reason = 'CORRUPT_FILE' WHERE hash = ?`, failed); err != nil {
+		t.Fatal(err)
+	}
+	f, err := s.GetDocumentByHash(context.Background(), failed)
+	if err != nil || f == nil || f.FailureReason == nil || *f.FailureReason != "CORRUPT_FILE" {
+		t.Errorf("get failed document = %+v, %v; want failure_reason CORRUPT_FILE read back", f, err)
+	}
+
 	missing, err := s.GetDocumentByHash(context.Background(), "0000")
 	if err != nil || missing != nil {
 		t.Errorf("get unknown hash = %v, %v; want nil, nil (a missing document is not an error)", missing, err)
