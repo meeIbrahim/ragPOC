@@ -12,6 +12,7 @@ import (
 const validTOML = `
 [minio]
 url="localhost:9000"
+public_url="http://localhost:9000"
 access_key="minio_user"
 secret_key="minio_password"
 upload_bucket="upload-bucket"
@@ -67,6 +68,12 @@ sqlite_dir="./go_sqlite_db"
 [go.ask]
 deadline="3m"
 
+[go.documents]
+max_entries=500
+
+[go.ui]
+static_dir=""
+
 [go.status_consumer]
 entry_timeout="5s"
 min_idle="60s"
@@ -111,6 +118,9 @@ func TestLoadParsesAllSections(t *testing.T) {
 	}
 	if cfg.Go.Ask.Deadline.Std() != 3*time.Minute {
 		t.Errorf("Go.Ask.Deadline = %v", cfg.Go.Ask.Deadline.Std())
+	}
+	if cfg.Minio.PublicURL != "http://localhost:9000" || cfg.Go.Documents.MaxEntries != 500 || cfg.Go.UI.StaticDir != "" {
+		t.Errorf("public_url/max_entries/static_dir = %q/%d/%q", cfg.Minio.PublicURL, cfg.Go.Documents.MaxEntries, cfg.Go.UI.StaticDir)
 	}
 	if cfg.RAG.MaxQueryChars != 2000 || cfg.RAG.MaxDocumentIDs != 100 {
 		t.Errorf("RAG query limits = %d/%d", cfg.RAG.MaxQueryChars, cfg.RAG.MaxDocumentIDs)
@@ -165,6 +175,9 @@ func TestLoadRealConfig(t *testing.T) {
 	// The host dev loop runs rag.server on the host, not in compose.
 	if cfg.RAGGRPC.Host != "localhost" {
 		t.Errorf("rag_grpc.host = %q, the host dev loop dials localhost", cfg.RAGGRPC.Host)
+	}
+	if cfg.Minio.PublicURL != "http://localhost:9000" {
+		t.Errorf("minio.public_url = %q; the host dev loop signs for localhost:9000", cfg.Minio.PublicURL)
 	}
 }
 
@@ -252,6 +265,19 @@ port=50051`, "rag_grpc.port"},
 		{"max_query_chars zero", `max_query_chars=2000`, `max_query_chars=0`, "rag.max_query_chars"},
 		{"missing max_query_chars", `max_query_chars=2000`, ``, "rag.max_query_chars"},
 		{"max_document_ids zero", `max_document_ids=100`, `max_document_ids=0`, "rag.max_document_ids"},
+		// F5 A1: public_url signs every presigned PUT, so a URL the browser cannot use fails here.
+		{"missing public_url", `public_url="http://localhost:9000"`, ``, "minio.public_url"},
+		{"public_url without scheme", `public_url="http://localhost:9000"`, `public_url="localhost:9000"`, "minio.public_url"},
+		{"public_url ftp scheme", `public_url="http://localhost:9000"`, `public_url="ftp://localhost:9000"`, "minio.public_url"},
+		{"public_url without host", `public_url="http://localhost:9000"`, `public_url="http://"`, "minio.public_url"},
+		{"public_url with a path", `public_url="http://localhost:9000"`, `public_url="http://localhost:9000/minio"`, "minio.public_url"},
+		{"public_url with a query", `public_url="http://localhost:9000"`, `public_url="http://localhost:9000?x=1"`, "minio.public_url"},
+		{"public_url with a fragment", `public_url="http://localhost:9000"`, `public_url="http://localhost:9000#top"`, "minio.public_url"},
+		{"public_url with userinfo", `public_url="http://localhost:9000"`, `public_url="http://u:p@localhost:9000"`, "minio.public_url"},
+		{"public_url bad port", `public_url="http://localhost:9000"`, `public_url="http://localhost:ninety"`, "minio.public_url"},
+		{"missing go.documents section", "[go.documents]\nmax_entries=500", ``, "go.documents.max_entries"},
+		{"max_entries zero", `max_entries=500`, `max_entries=0`, "go.documents.max_entries"},
+		{"max_entries negative", `max_entries=500`, `max_entries=-1`, "go.documents.max_entries"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -265,6 +291,53 @@ port=50051`, "rag_grpc.port"},
 			}
 			if !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("error %q does not mention %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestPublicURLAcceptedForms(t *testing.T) {
+	for _, u := range []string{"http://localhost:9000", "http://localhost:9000/", "https://minio.example.com", "http://10.0.0.5:9000"} {
+		body := strings.Replace(validTOML, `public_url="http://localhost:9000"`, `public_url="`+u+`"`, 1)
+		if _, err := Load(writeConfig(t, body)); err != nil {
+			t.Errorf("public_url %q rejected: %v", u, err)
+		}
+	}
+}
+
+// F5 A4: static_dir is optional; when set it must be a directory holding index.html, so a typo
+// fails at startup instead of serving 404s.
+func TestStaticDir(t *testing.T) {
+	withIndex := t.TempDir()
+	if err := os.WriteFile(filepath.Join(withIndex, "index.html"), []byte("<html></html>"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	notADir := filepath.Join(withIndex, "index.html")
+	tests := []struct {
+		name    string
+		section string // the [go.ui] table, or "" to leave it out
+		wantErr bool
+	}{
+		{"absent", "", false},
+		{"empty", `static_dir=""`, false},
+		{"directory with index.html", `static_dir="` + withIndex + `"`, false},
+		{"missing directory", `static_dir="` + filepath.Join(withIndex, "nope") + `"`, true},
+		{"directory without index.html", `static_dir="` + t.TempDir() + `"`, true},
+		{"a file, not a directory", `static_dir="` + notADir + `"`, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			table := ""
+			if tc.section != "" {
+				table = "[go.ui]\n" + tc.section
+			}
+			body := strings.Replace(validTOML, "[go.ui]\nstatic_dir=\"\"", table, 1)
+			_, err := Load(writeConfig(t, body))
+			if tc.wantErr && (err == nil || !strings.Contains(err.Error(), "go.ui.static_dir")) {
+				t.Fatalf("err = %v; want a go.ui.static_dir error", err)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("err = %v; want the config accepted", err)
 			}
 		})
 	}
@@ -393,7 +466,15 @@ func TestPort65535IsValid(t *testing.T) {
 // The compose and e2e files are separate full copies (decision D6), so each must load on its
 // own, hold only keys the services model, and keep the timings the e2e depends on.
 func TestDeployConfigsLoad(t *testing.T) {
-	for _, name := range []string{"config.compose.toml", "config.e2e.toml", "config.faults.toml", "config.faults-blackhole.toml"} {
+	// F5 A3: compose hands URLs to a browser on the host; the e2e test PUTs from inside the
+	// compose network.
+	publicURL := map[string]string{
+		"config.compose.toml":          "http://localhost:9000",
+		"config.e2e.toml":              "http://minio:9000",
+		"config.faults.toml":           "http://minio:9000",
+		"config.faults-blackhole.toml": "http://minio:9000",
+	}
+	for name, wantPublic := range publicURL {
 		t.Run(name, func(t *testing.T) {
 			cfg, err := Load(filepath.Join("..", "..", "..", "..", "deploy", name))
 			if err != nil {
@@ -411,6 +492,12 @@ func TestDeployConfigsLoad(t *testing.T) {
 			}
 			if cfg.Go.Ask.Deadline.Std() != 3*time.Minute {
 				t.Errorf("go.ask.deadline = %v", cfg.Go.Ask.Deadline.Std())
+			}
+			if cfg.Minio.PublicURL != wantPublic {
+				t.Errorf("minio.public_url = %q; want %q", cfg.Minio.PublicURL, wantPublic)
+			}
+			if cfg.Go.Documents.MaxEntries != 500 || cfg.Go.UI.StaticDir != "" {
+				t.Errorf("go.documents.max_entries/go.ui.static_dir = %d/%q; want 500/\"\"", cfg.Go.Documents.MaxEntries, cfg.Go.UI.StaticDir)
 			}
 			if cfg.Ingestion.MaxAttempts != 3 {
 				t.Errorf("max_attempts = %d, the PRD acceptance checks assume 3", cfg.Ingestion.MaxAttempts)

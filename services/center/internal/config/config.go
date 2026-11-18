@@ -3,6 +3,9 @@ package config
 
 import (
 	"fmt"
+	"net/url"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -55,7 +58,10 @@ func (d Duration) Std() time.Duration {
 }
 
 type MinioConfig struct {
-	URL             string `toml:"url"`
+	URL string `toml:"url"`
+	// PublicURL is where browsers reach MinIO. It only signs presigned PUT URLs; Go never dials
+	// it, so in compose it can be a host address the container cannot reach.
+	PublicURL       string `toml:"public_url"`
 	AccessKey       string `toml:"access_key"`
 	SecretKey       string `toml:"secret_key"`
 	UploadBucket    string `toml:"upload_bucket"`
@@ -149,6 +155,8 @@ type GoConfig struct {
 	Port           int                  `toml:"port"`
 	SQLiteDir      string               `toml:"sqlite_dir"`
 	Ask            AskConfig            `toml:"ask"`
+	Documents      DocumentsConfig      `toml:"documents"`
+	UI             UIConfig             `toml:"ui"`
 	StatusConsumer StatusConsumerConfig `toml:"status_consumer"`
 	Hashing        WorkerConfig         `toml:"hashing"`
 	Outbox         OutboxConfig         `toml:"outbox"`
@@ -158,6 +166,16 @@ type AskConfig struct {
 	// Deadline bounds one whole AskStream: retrieval plus the full streamed answer. Each
 	// external call inside it is bounded by [rag].call_timeout, so it must be longer.
 	Deadline Duration `toml:"deadline"`
+}
+
+type DocumentsConfig struct {
+	// MaxEntries caps GET /documents; past it the response says truncated.
+	MaxEntries int `toml:"max_entries"`
+}
+
+type UIConfig struct {
+	// StaticDir is the built web UI, served at /. Empty means no UI is served.
+	StaticDir string `toml:"static_dir"`
 }
 
 // WorkerConfig tunes a polling worker pool and its recovery sweep ([go.hashing], [go.outbox]).
@@ -251,6 +269,15 @@ func (c *Config) Validate() error {
 	}
 	if c.RAG.MaxDocumentIDs < 1 {
 		add("rag.max_document_ids must be >= 1")
+	}
+	if err := checkPublicURL(c.Minio.PublicURL); err != nil {
+		add("minio.public_url %v", err)
+	}
+	if c.Go.Documents.MaxEntries < 1 {
+		add("go.documents.max_entries must be >= 1")
+	}
+	if err := checkStaticDir(c.Go.UI.StaticDir); err != nil {
+		add("go.ui.static_dir %v", err)
 	}
 	if c.Go.Ask.Deadline <= 0 {
 		add("go.ask.deadline must be > 0")
@@ -363,4 +390,43 @@ func validateWorker(table string, w WorkerConfig, add func(format string, args .
 	if w.StaleThreshold > 0 && w.JobTimeout >= w.StaleThreshold {
 		add("%s.stale_threshold (%v) must exceed job_timeout (%v)", table, w.StaleThreshold.Std(), w.JobTimeout.Std())
 	}
+}
+
+// checkPublicURL accepts only a scheme, host and optional port: presigned URLs are built on it,
+// so anything more would end up in every upload_url.
+func checkPublicURL(raw string) error {
+	if raw == "" {
+		return fmt.Errorf("must not be empty")
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("%q is not a URL: %v", raw, err)
+	}
+	switch {
+	case u.Scheme != "http" && u.Scheme != "https":
+		return fmt.Errorf("%q must start with http:// or https://", raw)
+	case u.Hostname() == "":
+		return fmt.Errorf("%q has no host", raw)
+	case u.User != nil:
+		return fmt.Errorf("%q must not carry credentials", raw)
+	case u.Path != "" && u.Path != "/":
+		return fmt.Errorf("%q must not have a path", raw)
+	case u.RawQuery != "" || u.ForceQuery || u.Fragment != "":
+		return fmt.Errorf("%q must not have a query or fragment", raw)
+	}
+	return nil
+}
+
+// checkStaticDir accepts "" (no UI) or a directory holding index.html.
+func checkStaticDir(dir string) error {
+	if dir == "" {
+		return nil
+	}
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		return fmt.Errorf("%q must be an existing directory", dir)
+	}
+	if info, err := os.Stat(filepath.Join(dir, "index.html")); err != nil || !info.Mode().IsRegular() {
+		return fmt.Errorf("%q must contain index.html", dir)
+	}
+	return nil
 }
