@@ -42,6 +42,7 @@ func testIndexed(t *testing.T) {
 		t.Fatalf("final status = %s, want INDEXED", got)
 	}
 	hash := s.track(hashOf(t, s.db, id))
+	assertFailureReason(t, id, "")
 
 	if d := mustDoc(t, s.db, hash); d != (docRow{"INDEXED", 0}) {
 		t.Fatalf("document = %+v, want INDEXED with retries=0", d)
@@ -83,6 +84,7 @@ func testFailedRetryable(t *testing.T) {
 
 	// max_attempts=3: attempts 0, 1, 2 fail; the third failure is final.
 	assertUnchanged(t, s, hash, docRow{"FAILED", maxAttempts - 1}, maxAttempts)
+	assertFailureReason(t, id, "INTERNAL")
 	events := statusEventsFor(t, s.rdb, hash)
 	if len(events) != maxAttempts {
 		t.Fatalf("status events = %d, want %d: %+v", len(events), maxAttempts, events)
@@ -120,6 +122,7 @@ func testFailedPermanent(t *testing.T) {
 
 	// A permanent failure never consumes a retry and queues no second attempt.
 	assertUnchanged(t, s, hash, docRow{"FAILED", 0}, 1)
+	assertFailureReason(t, id, "CORRUPT_FILE")
 	events := statusEventsFor(t, s.rdb, hash)
 	if len(events) != 1 || events[0].Reason != "CORRUPT_FILE" || events[0].Retryable == nil || *events[0].Retryable {
 		t.Fatalf("status events = %+v, want one non-retryable CORRUPT_FILE", events)
@@ -138,6 +141,7 @@ func testSlow(t *testing.T) {
 	hash := s.track(hashOf(t, s.db, id))
 
 	assertUnchanged(t, s, hash, docRow{"FAILED", maxAttempts - 1}, maxAttempts)
+	assertFailureReason(t, id, "JOB_TIMEOUT") // retryable, but exhausted, so stored
 	events := statusEventsFor(t, s.rdb, hash)
 	if len(events) != maxAttempts {
 		t.Fatalf("status events = %d, want %d: %+v", len(events), maxAttempts, events)
@@ -178,6 +182,7 @@ func assertPoisonedAfterRestarts(t *testing.T, label string, timeout time.Durati
 
 	// The job never reported anything itself, so the attempt counter did not move.
 	assertUnchanged(t, s, hash, docRow{"FAILED", 0}, 1)
+	assertFailureReason(t, id, "POISON_MESSAGE")
 	events := statusEventsFor(t, s.rdb, hash)
 	if len(events) != 1 {
 		t.Fatalf("status events = %+v, want exactly one (the poison report)", events)
