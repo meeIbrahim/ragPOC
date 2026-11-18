@@ -212,6 +212,12 @@ allowed_extensions=[".pdf", ".txt", ".md"]
 [go.ask]                             # Phase 3
 deadline="3m"                        # bounds a whole AskStream; must exceed [rag].call_timeout
 
+[go.documents]                       # Phase 3
+max_entries=500                      # cap on GET /documents entries; more gives truncated=true
+
+[go.ui]                              # Phase 3
+static_dir=""                        # built SPA served at /; empty = no UI
+
 [go.status_consumer]
 entry_timeout="5s"
 min_idle="60s"
@@ -230,8 +236,8 @@ Same origin as the UI. JSON uses `snake_case`. Exact request and response shapes
 |---|---|
 | `POST /upload` | Unchanged. Returns the upload id and a presigned PUT URL signed with `[minio].public_url`. |
 | `POST /upload/{id}/confirm` | Unchanged. |
-| `GET /upload/{id}` | Unchanged, plus `failure_reason` when the document is `FAILED`. |
-| `GET /documents` | New. Documents newest first: id (an upload id), filename, status, `failure_reason`, created time. One entry per content hash; uploads not hashed yet appear as pending entries. |
+| `GET /upload/{id}` | Unchanged, plus `failure_reason` when the status is `FAILED`: the PRD 4.2 code, or the Go-only `UPLOAD_FAILED` for an upload that failed in hashing. Absent otherwise. |
+| `GET /documents` | New. `{documents, truncated}`. Entries newest first: `id` (the oldest linked upload id), `upload_ids` (every linked upload id), filename, status, `failure_reason`, `created_at`. One entry per content hash; uploads not hashed yet appear as pending entries; `WAITING` and `EXPIRED` uploads are hidden. Capped by `[go.documents].max_entries`; `truncated` says more exist. No hash in the body. |
 | `POST /ask` | New. Body: question and optional upload ids. Response: `text/event-stream` mapped from `AskStream`: message 1 to `event: sources`, later messages to `event: delta`, then `event: done`; failures end the stream with `event: error`. A client disconnect cancels the gRPC call. |
 | `GET /` and static assets | New. The built SPA. |
 
