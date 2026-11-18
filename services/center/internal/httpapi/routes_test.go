@@ -68,3 +68,21 @@ func TestRouterWithoutStatic(t *testing.T) {
 		{http.MethodGet, "/", http.StatusNotFound, ""},
 	})
 }
+
+// With the UI mounted at "/", every API route must still win (deviation 1: GET /ask becomes the
+// static handler's 404 instead of the mux's 405).
+func TestRouterWithStatic(t *testing.T) {
+	d := deps()
+	d.Static = marker("static")
+	h := httpapi.NewRouter(d) // a pattern conflict would panic here
+	checkRoutes(t, h, []routeCase{
+		{http.MethodGet, "/", 299, "static"},
+		{http.MethodGet, "/assets/app.js", 299, "static"},
+		{http.MethodGet, "/documents", 299, "documents"},
+		{http.MethodPost, "/documents", 299, "static"}, // the static handler answers 405 itself
+		{http.MethodPost, "/ask", 299, "ask"},
+		{http.MethodGet, "/ask", 299, "static"},
+		{http.MethodPost, "/upload", http.StatusBadRequest, ""},
+		{http.MethodDelete, "/upload/abc", http.StatusMethodNotAllowed, ""},
+	})
+}

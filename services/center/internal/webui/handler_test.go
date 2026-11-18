@@ -82,7 +82,7 @@ func TestNotFound(t *testing.T) {
 	for _, target := range []string{
 		"/missing.js",
 		"/empty/", "/empty", // a directory without index.html: never a listing (A6)
-		"/assets/",          // has files but no index.html
+		"/assets/",                                    // has files but no index.html
 		"/.env", "/.well-known/thing", "/assets/.map", // dotfiles (A6)
 	} {
 		rec := get(h, http.MethodGet, target)

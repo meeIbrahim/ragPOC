@@ -27,6 +27,7 @@ import (
 	"center-service/internal/storage/minio"
 	"center-service/internal/store/sqlite"
 	"center-service/internal/upload"
+	"center-service/internal/webui"
 )
 
 const (
@@ -171,6 +172,11 @@ func run() error {
 	svc := upload.NewService(store, minioClient, logger)
 	askSvc := ask.NewService(store, ask.Limits{MaxQueryChars: cfg.RAG.MaxQueryChars, MaxDocumentIDs: cfg.RAG.MaxDocumentIDs})
 	documentHandlers := documents.NewHandlers(store, cfg.Go.Documents.MaxEntries, logger)
+	var static http.Handler
+	if cfg.Go.UI.StaticDir != "" {
+		static = webui.Handler(cfg.Go.UI.StaticDir)
+		log.Printf("serving the web UI from %s", cfg.Go.UI.StaticDir)
+	}
 	server := newServer(func(askShutdown context.Context) http.Handler {
 		askHandlers := ask.NewHandlers(askSvc, ragClient, askShutdown, logger)
 		return httpapi.NewRouter(httpapi.Deps{
@@ -179,6 +185,7 @@ func run() error {
 			Documents:         documentHandlers.List,
 			Logger:            logger,
 			AllowedExtensions: cfg.Ingestion.AllowedExtensions,
+			Static:            static,
 		})
 	})
 	shutdownDone := make(chan struct{})
