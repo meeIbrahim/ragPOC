@@ -51,3 +51,14 @@ func (o FailedOutcome) String() string {
 	}
 	return "unknown"
 }
+
+// DocumentEntry is one row of GET /documents: a document with every upload linked to it, or an
+// upload that has no document yet. It never carries the hash.
+type DocumentEntry struct {
+	ID            string   // the oldest linked upload
+	UploadIDs     []string // every linked upload, oldest first
+	FileName      string
+	Status        DocumentStatus
+	FailureReason string // empty unless Status is FAILED with a known reason
+	CreatedAt     time.Time
+}
