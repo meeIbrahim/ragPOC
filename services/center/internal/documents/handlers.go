@@ -52,6 +52,8 @@ func (h *Handlers) List(w http.ResponseWriter, r *http.Request) {
 	resp := listResponse{Documents: make([]documentJSON, 0, len(entries)), Truncated: truncated}
 	for _, e := range entries {
 		d := documentJSON{ID: e.ID, UploadIDs: e.UploadIDs, FileName: e.FileName, Status: string(e.Status), CreatedAt: e.CreatedAt}
+		// The store already pairs reasons with FAILED; checked again here because the response
+		// contract (reason only on FAILED) is this handler's, whatever the Lister returns.
 		if e.Status == domain.DocumentFailed {
 			d.FailureReason = e.FailureReason
 		}

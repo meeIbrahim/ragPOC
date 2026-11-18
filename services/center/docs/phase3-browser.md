@@ -88,7 +88,9 @@ rm -rf "$tmp"
 
 ```sh
 "${DC[@]}" down -v
-rm -rf ./qdrant_data ./ingestion_docs   # only when run from a worktree: these are its bind mounts
+# Only in a worktree (where .git is a file): there these dirs are the run's bind mounts. In the
+# main checkout they hold your dev data, so the guard skips them.
+[ -f .git ] && rm -rf ./qdrant_data ./ingestion_docs
 ```
 
 ## Results

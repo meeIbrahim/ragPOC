@@ -15,7 +15,8 @@ import (
 // created_at a plain column, which modernc needs to scan a time), plus every upload without a
 // document that the UI should see. The join back to upload_intent then gives one row per
 // linked upload id, in entry order; ListDocuments folds them into entries. upload_intent.uuid
-// breaks every tie, so the order is the same on every poll.
+// breaks every tie, so the order is the same on every poll. The join back scans upload_intent
+// once per entry (upload_intent.hash has no index): accepted at demo scale (spec A7).
 const listDocumentsQuery = `
 WITH entries AS (
 	SELECT id, hash, file_name, status, failure_reason, created_at FROM (

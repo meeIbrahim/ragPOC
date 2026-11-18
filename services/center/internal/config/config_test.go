@@ -296,6 +296,20 @@ port=50051`, "rag_grpc.port"},
 	}
 }
 
+// public_url with userinfo most likely holds the MinIO keys: the rejection must not print them.
+func TestPublicURLErrorsDoNotEchoCredentials(t *testing.T) {
+	for _, u := range []string{"http://minio_user:s3cr3t@localhost:9000", "http://minio_user:s3cr3t@localhost:ninety"} {
+		body := strings.Replace(validTOML, `public_url="http://localhost:9000"`, `public_url="`+u+`"`, 1)
+		_, err := Load(writeConfig(t, body))
+		if err == nil || !strings.Contains(err.Error(), "minio.public_url") {
+			t.Fatalf("%s: err = %v; want a minio.public_url error", u, err)
+		}
+		if strings.Contains(err.Error(), "s3cr3t") {
+			t.Errorf("error %q prints the secret from public_url", err)
+		}
+	}
+}
+
 func TestPublicURLAcceptedForms(t *testing.T) {
 	for _, u := range []string{"http://localhost:9000", "http://localhost:9000/", "https://minio.example.com", "http://10.0.0.5:9000"} {
 		body := strings.Replace(validTOML, `public_url="http://localhost:9000"`, `public_url="`+u+`"`, 1)

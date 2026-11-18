@@ -174,7 +174,8 @@ type DocumentsConfig struct {
 }
 
 type UIConfig struct {
-	// StaticDir is the built web UI, served at /. Empty means no UI is served.
+	// StaticDir is the built web UI, served at /. Empty means no UI is served. A relative path
+	// resolves against the process's working directory, not the config file's.
 	StaticDir string `toml:"static_dir"`
 }
 
@@ -398,21 +399,24 @@ func checkPublicURL(raw string) error {
 	if raw == "" {
 		return fmt.Errorf("must not be empty")
 	}
+	// The value may hold credentials by mistake, so no message echoes it raw: a parse error
+	// (which quotes the input) is reported without the value, the rest use u.Redacted().
 	u, err := url.Parse(raw)
 	if err != nil {
-		return fmt.Errorf("%q is not a URL: %v", raw, err)
+		return fmt.Errorf("is not a valid URL")
 	}
+	shown := u.Redacted()
 	switch {
-	case u.Scheme != "http" && u.Scheme != "https":
-		return fmt.Errorf("%q must start with http:// or https://", raw)
-	case u.Hostname() == "":
-		return fmt.Errorf("%q has no host", raw)
 	case u.User != nil:
-		return fmt.Errorf("%q must not carry credentials", raw)
+		return fmt.Errorf("%q must not carry credentials", shown)
+	case u.Scheme != "http" && u.Scheme != "https":
+		return fmt.Errorf("%q must start with http:// or https://", shown)
+	case u.Hostname() == "":
+		return fmt.Errorf("%q has no host", shown)
 	case u.Path != "" && u.Path != "/":
-		return fmt.Errorf("%q must not have a path", raw)
+		return fmt.Errorf("%q must not have a path", shown)
 	case u.RawQuery != "" || u.ForceQuery || u.Fragment != "":
-		return fmt.Errorf("%q must not have a query or fragment", raw)
+		return fmt.Errorf("%q must not have a query or fragment", shown)
 	}
 	return nil
 }
@@ -422,11 +426,19 @@ func checkStaticDir(dir string) error {
 	if dir == "" {
 		return nil
 	}
-	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
-		return fmt.Errorf("%q must be an existing directory", dir)
+	info, err := os.Stat(dir)
+	if err != nil {
+		return fmt.Errorf("%q must be an existing directory: %v", dir, err)
 	}
-	if info, err := os.Stat(filepath.Join(dir, "index.html")); err != nil || !info.Mode().IsRegular() {
-		return fmt.Errorf("%q must contain index.html", dir)
+	if !info.IsDir() {
+		return fmt.Errorf("%q must be a directory", dir)
+	}
+	index, err := os.Stat(filepath.Join(dir, "index.html"))
+	if err != nil {
+		return fmt.Errorf("%q must contain index.html: %v", dir, err)
+	}
+	if !index.Mode().IsRegular() {
+		return fmt.Errorf("%q: index.html must be a regular file", dir)
 	}
 	return nil
 }
