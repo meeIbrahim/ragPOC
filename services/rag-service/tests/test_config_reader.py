@@ -181,6 +181,12 @@ def test_rag_grpc_host_is_not_reported_as_unknown(tmp_path):
     assert load(write(tmp_path, body)).unknown_keys == ()
 
 
+# The URL browsers reach MinIO at; only Go signs with it, so this service never reads it.
+def test_minio_public_url_is_not_reported_as_unknown(tmp_path):
+    body = broken('url="localhost:9000"', 'url="localhost:9000"\npublic_url="http://localhost:9000"')
+    assert load(write(tmp_path, body)).unknown_keys == ()
+
+
 def test_the_go_section_is_not_reported_as_unknown(tmp_path):
     assert load(write(tmp_path, VALID_TOML)).unknown_keys == ()
 
