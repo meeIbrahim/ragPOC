@@ -30,6 +30,7 @@ func TestPhase0(t *testing.T) {
 	t.Run("ask_validation", testAskValidation)
 	t.Run("ask_short_circuit", testAskShortCircuit)
 	t.Run("ask_unavailable", testAskUnavailable)
+	t.Run("documents_list", testDocumentsList)
 }
 
 // stub mode: indexed
@@ -94,6 +95,7 @@ func testFailedRetryable(t *testing.T) {
 			t.Errorf("event %d = %+v, want retryable FAILED INTERNAL with attempts=%d", i, ev, i)
 		}
 	}
+	assertListed(t, id, "FAILED", "INTERNAL")
 	// The center published one ingest event per attempt, with the attempt number it holds.
 	if got := publishedAttempts(t, s.rdb, hash); len(got) != maxAttempts || got[0] != 0 || got[1] != 1 || got[2] != 2 {
 		t.Errorf("published ingest attempts = %v, want [0 1 2]", got)
@@ -127,6 +129,7 @@ func testFailedPermanent(t *testing.T) {
 	if len(events) != 1 || events[0].Reason != "CORRUPT_FILE" || events[0].Retryable == nil || *events[0].Retryable {
 		t.Fatalf("status events = %+v, want one non-retryable CORRUPT_FILE", events)
 	}
+	assertListed(t, id, "FAILED", "CORRUPT_FILE")
 }
 
 // stub mode: slow (every attempt overruns job_timeout)
