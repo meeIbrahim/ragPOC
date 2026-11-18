@@ -75,3 +75,51 @@ func TestStatusCheckConstraintsRejectUnknownStatuses(t *testing.T) {
 		}
 	}
 }
+
+func execMigration(t *testing.T, db *sql.DB, name string) {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join("..", "..", "..", "migrations", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(string(body)); err != nil {
+		t.Fatalf("%s: %v", name, err)
+	}
+}
+
+func hasColumn(t *testing.T, db *sql.DB, table, column string) bool {
+	t.Helper()
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, table, column).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n == 1
+}
+
+// 0004 runs on databases that already hold documents, so both directions must keep the rows.
+func TestFailureReasonMigrationKeepsExistingRows(t *testing.T) {
+	db := testutil.NewSQLite(t)
+	execMigration(t, db, "0004_add_document_failure_reason.down.sql")
+	insertDoc(t, db, hash, "FAILED", 3)
+
+	execMigration(t, db, "0004_add_document_failure_reason.up.sql")
+	var reason sql.NullString
+	if err := db.QueryRow(`SELECT failure_reason FROM document_store WHERE hash = ?`, hash).Scan(&reason); err != nil {
+		t.Fatalf("existing row after 0004 up: %v", err)
+	}
+	if reason.Valid {
+		t.Errorf("failure_reason = %q on a row that existed before 0004; want NULL: the migration must not invent a reason", reason.String)
+	}
+
+	if _, err := db.Exec(`UPDATE document_store SET failure_reason = 'CORRUPT_FILE' WHERE hash = ?`, hash); err != nil {
+		t.Fatal(err)
+	}
+	execMigration(t, db, "0004_add_document_failure_reason.down.sql")
+	if hasColumn(t, db, "document_store", "failure_reason") {
+		t.Error("failure_reason still exists after 0004 down")
+	}
+	var status string
+	if err := db.QueryRow(`SELECT status FROM document_store WHERE hash = ?`, hash).Scan(&status); err != nil || status != "FAILED" {
+		t.Errorf("row after 0004 down = %q, %v; want FAILED: dropping the column must keep the document", status, err)
+	}
+}
