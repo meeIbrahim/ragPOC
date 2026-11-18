@@ -102,6 +102,56 @@ func TestStatusHandlerReturnsTheStatusUncached(t *testing.T) {
 	}
 }
 
+// F2 D3: failure_reason is in the raw body only when the status is FAILED; omitempty keeps it
+// out otherwise, and a FAILED row from before migration 0004 has no field either.
+func TestStatusHandlerFailureReasonField(t *testing.T) {
+	cases := []struct {
+		name   string
+		seed   func(*fakeStore)
+		reason string // "" = the key must be absent
+	}{
+		{"document failed", func(s *fakeStore) { seedHashed(s, domain.DocumentFailed, ptr("CORRUPT_FILE")) }, "CORRUPT_FILE"},
+		{"intent failed", func(s *fakeStore) {
+			i := waiting("i1", now.Add(time.Hour))
+			i.Status = domain.IntentFailed
+			s.put(i)
+		}, domain.ReasonUploadFailed},
+		{"document failed with NULL reason", func(s *fakeStore) { seedHashed(s, domain.DocumentFailed, nil) }, ""},
+		{"processing", func(s *fakeStore) { seedHashed(s, domain.DocumentProcessing, nil) }, ""},
+		{"indexed", func(s *fakeStore) { seedHashed(s, domain.DocumentIndexed, nil) }, ""},
+		{"expired", func(s *fakeStore) { s.put(waiting("i1", now.Add(-time.Second))) }, ""},
+		{"waiting", func(s *fakeStore) { s.put(waiting("i1", now.Add(time.Hour))) }, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			store := newFakeStore()
+			c.seed(store)
+			rec := serve(store, http.MethodGet, "/i1")
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d; want 200", rec.Code)
+			}
+			var raw map[string]any
+			if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+				t.Fatal(err)
+			}
+			got, present := raw["failure_reason"]
+			if c.reason == "" && present {
+				t.Errorf("body %s has failure_reason; want the key absent unless the status is FAILED with a known reason", rec.Body.String())
+			}
+			if c.reason != "" && got != c.reason {
+				t.Errorf("failure_reason = %v in %s; want %q", got, rec.Body.String(), c.reason)
+			}
+		})
+	}
+}
+
+func seedHashed(s *fakeStore, status domain.DocumentStatus, reason *string) {
+	i := waiting("i1", now.Add(time.Hour))
+	i.Status, i.Hash = domain.IntentHashed, ptr(docHash)
+	s.put(i)
+	s.documents[docHash] = &domain.Document{Hash: docHash, Status: status, FailureReason: reason}
+}
+
 func TestStatusHandlerErrors(t *testing.T) {
 	cases := []struct {
 		name   string

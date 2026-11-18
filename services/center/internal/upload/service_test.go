@@ -199,7 +199,7 @@ func TestGetUploadStatusReportsTheDocumentOnceHashed(t *testing.T) {
 			store.put(i)
 			store.documents[docHash] = &domain.Document{Hash: docHash, Status: ds}
 
-			_, status, err := newTestService(store, &fakeBlob{}).GetUploadStatus(context.Background(), "i1")
+			_, status, _, err := newTestService(store, &fakeBlob{}).GetUploadStatus(context.Background(), "i1")
 			if err != nil || *status != string(ds) {
 				t.Errorf("status = %v, %v; want the document's %s: once hashed, the poll follows the document", deref(status), err, ds)
 			}
@@ -230,7 +230,7 @@ func TestGetUploadStatusBeforeTheDocumentExists(t *testing.T) {
 			i.Status = c.status
 			store.put(i)
 
-			_, status, err := newTestService(store, &fakeBlob{}).GetUploadStatus(context.Background(), "i1")
+			_, status, _, err := newTestService(store, &fakeBlob{}).GetUploadStatus(context.Background(), "i1")
 			if err != nil || *status != c.want {
 				t.Errorf("status = %v, %v; want %s", deref(status), err, c.want)
 			}
@@ -240,7 +240,7 @@ func TestGetUploadStatusBeforeTheDocumentExists(t *testing.T) {
 
 func TestGetUploadStatusErrors(t *testing.T) {
 	t.Run("unknown id", func(t *testing.T) {
-		_, _, err := newTestService(newFakeStore(), &fakeBlob{}).GetUploadStatus(context.Background(), "nope")
+		_, _, _, err := newTestService(newFakeStore(), &fakeBlob{}).GetUploadStatus(context.Background(), "nope")
 		if !errors.Is(err, ErrIntentNotFound) {
 			t.Errorf("err = %v; want ErrIntentNotFound", err)
 		}
@@ -250,7 +250,7 @@ func TestGetUploadStatusErrors(t *testing.T) {
 		i := waiting("i1", now.Add(time.Hour))
 		i.Status = domain.IntentUnknown
 		store.put(i)
-		if _, _, err := newTestService(store, &fakeBlob{}).GetUploadStatus(context.Background(), "i1"); !errors.Is(err, ErrIntentUnknown) {
+		if _, _, _, err := newTestService(store, &fakeBlob{}).GetUploadStatus(context.Background(), "i1"); !errors.Is(err, ErrIntentUnknown) {
 			t.Errorf("err = %v; want ErrIntentUnknown", err)
 		}
 	})
@@ -260,7 +260,7 @@ func TestGetUploadStatusErrors(t *testing.T) {
 		i.Status, i.Hash = domain.IntentHashed, ptr(docHash)
 		store.put(i)
 		store.errs["GetDocumentByHash"] = errBoom
-		if _, _, err := newTestService(store, &fakeBlob{}).GetUploadStatus(context.Background(), "i1"); !errors.Is(err, errBoom) {
+		if _, _, _, err := newTestService(store, &fakeBlob{}).GetUploadStatus(context.Background(), "i1"); !errors.Is(err, errBoom) {
 			t.Errorf("err = %v; want the document read failure", err)
 		}
 	})
@@ -271,11 +271,67 @@ func TestGetUploadStatusErrors(t *testing.T) {
 		i := waiting("i1", now.Add(time.Hour))
 		i.Status, i.Hash = domain.IntentHashed, ptr(docHash)
 		store.put(i)
-		_, status, err := newTestService(store, &fakeBlob{}).GetUploadStatus(context.Background(), "i1")
+		_, status, _, err := newTestService(store, &fakeBlob{}).GetUploadStatus(context.Background(), "i1")
 		if err == nil {
 			t.Errorf("status = %q, err = nil; want an error naming the missing document %s", deref(status), docHash)
 		}
 	})
+}
+
+// F2 R5: the reason travels with FAILED only. A document FAILED gives the stored code, an
+// intent FAILED (hashing failed, no document) gives UPLOAD_FAILED, and every other state none.
+func TestGetUploadStatusFailureReason(t *testing.T) {
+	cases := []struct {
+		name      string
+		intent    domain.IntentState
+		expiresAt time.Time
+		doc       *domain.Document
+		want      string
+	}{
+		{"document failed", domain.IntentHashed, now.Add(time.Hour), &domain.Document{Hash: docHash, Status: domain.DocumentFailed, FailureReason: ptr("CORRUPT_FILE")}, "CORRUPT_FILE"},
+		{"document failed before 0004", domain.IntentHashed, now.Add(time.Hour), &domain.Document{Hash: docHash, Status: domain.DocumentFailed}, ""},
+		{"document processing", domain.IntentHashed, now.Add(time.Hour), &domain.Document{Hash: docHash, Status: domain.DocumentProcessing}, ""},
+		{"document indexed", domain.IntentHashed, now.Add(time.Hour), &domain.Document{Hash: docHash, Status: domain.DocumentIndexed}, ""},
+		{"intent failed in hashing", domain.IntentFailed, now.Add(time.Hour), nil, domain.ReasonUploadFailed},
+		{"waiting", domain.IntentWaiting, now.Add(time.Hour), nil, ""},
+		{"expired", domain.IntentExpired, now.Add(-time.Hour), nil, ""},
+		{"uploaded", domain.IntentUploaded, now.Add(time.Hour), nil, ""},
+		{"hashing", domain.IntentHashing, now.Add(time.Hour), nil, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			store := newFakeStore()
+			i := waiting("i1", c.expiresAt)
+			i.Status = c.intent
+			if c.doc != nil {
+				i.Hash = ptr(docHash)
+				store.documents[docHash] = c.doc
+			}
+			store.put(i)
+
+			_, _, reason, err := newTestService(store, &fakeBlob{}).GetUploadStatus(context.Background(), "i1")
+			if err != nil || reason != c.want {
+				t.Errorf("reason = %q, %v; want %q: only a FAILED status carries a reason", reason, err, c.want)
+			}
+		})
+	}
+}
+
+// F2 edge 8: a duplicate upload links to the same document, so it reports the same reason.
+func TestGetUploadStatusDuplicateReportsTheDocumentsReason(t *testing.T) {
+	store := newFakeStore()
+	store.documents[docHash] = &domain.Document{Hash: docHash, Status: domain.DocumentFailed, FailureReason: ptr("EMPTY_TEXT")}
+	for _, id := range []string{"i1", "i2"} {
+		i := waiting(id, now.Add(time.Hour))
+		i.Status, i.Hash = domain.IntentHashed, ptr(docHash)
+		store.put(i)
+	}
+	for _, id := range []string{"i1", "i2"} {
+		_, status, reason, err := newTestService(store, &fakeBlob{}).GetUploadStatus(context.Background(), id)
+		if err != nil || deref(status) != "FAILED" || reason != "EMPTY_TEXT" {
+			t.Errorf("%s = %s/%q, %v; want FAILED/EMPTY_TEXT, the linked document's reason", id, deref(status), reason, err)
+		}
+	}
 }
 
 func ptr[T any](v T) *T { return &v }
