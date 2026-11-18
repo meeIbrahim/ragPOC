@@ -399,16 +399,18 @@ func checkPublicURL(raw string) error {
 	if raw == "" {
 		return fmt.Errorf("must not be empty")
 	}
-	// The value may hold credentials by mistake, so no message echoes it raw: a parse error
-	// (which quotes the input) is reported without the value, the rest use u.Redacted().
+	// The value may hold the MinIO keys by mistake, so no message echoes it raw: a parse error
+	// (which quotes the input) and userinfo are reported without the value. u.Redacted() would
+	// still show the username, which for MinIO is the access key.
 	u, err := url.Parse(raw)
 	if err != nil {
 		return fmt.Errorf("is not a valid URL")
 	}
-	shown := u.Redacted()
+	if u.User != nil {
+		return fmt.Errorf("must not carry credentials (user:password@)")
+	}
+	shown := u.String()
 	switch {
-	case u.User != nil:
-		return fmt.Errorf("%q must not carry credentials", shown)
 	case u.Scheme != "http" && u.Scheme != "https":
 		return fmt.Errorf("%q must start with http:// or https://", shown)
 	case u.Hostname() == "":
