@@ -27,6 +27,7 @@ type applyFailedCall struct {
 	hash        string
 	attempts    int
 	retryable   bool
+	reason      string
 	maxAttempts int
 	now         time.Time
 }
@@ -55,9 +56,9 @@ func (f *fakeStore) ApplyIndexed(ctx context.Context, hash string, attempts int,
 	return f.indexedResult, f.err
 }
 
-func (f *fakeStore) ApplyFailed(ctx context.Context, hash string, attempts int, retryable bool, maxAttempts int, now time.Time) (domain.FailedOutcome, error) {
+func (f *fakeStore) ApplyFailed(ctx context.Context, hash string, attempts int, retryable bool, reason string, maxAttempts int, now time.Time) (domain.FailedOutcome, error) {
 	f.deadline, f.hadDL = ctx.Deadline()
-	f.failed = append(f.failed, applyFailedCall{hash, attempts, retryable, maxAttempts, now})
+	f.failed = append(f.failed, applyFailedCall{hash, attempts, retryable, reason, maxAttempts, now})
 	return f.failedResult, f.err
 }
 
@@ -105,9 +106,9 @@ func TestHandleFailedPassesRetryableAndMaxAttempts(t *testing.T) {
 		fixture string
 		want    applyFailedCall
 	}{
-		{"status_failed_retryable.json", applyFailedCall{fixtureHash, 1, true, 3, fixedNow}},
-		{"status_failed_permanent.json", applyFailedCall{fixtureHash, 0, false, 3, fixedNow}},
-		{"status_failed_poison.json", applyFailedCall{fixtureHash, 2, false, 3, fixedNow}},
+		{"status_failed_retryable.json", applyFailedCall{fixtureHash, 1, true, "DEPENDENCY_UNAVAILABLE", 3, fixedNow}},
+		{"status_failed_permanent.json", applyFailedCall{fixtureHash, 0, false, "UNSUPPORTED_TYPE", 3, fixedNow}},
+		{"status_failed_poison.json", applyFailedCall{fixtureHash, 2, false, "POISON_MESSAGE", 3, fixedNow}},
 	}
 	for _, tc := range tests {
 		for _, outcome := range []domain.FailedOutcome{domain.FailedStale, domain.FailedRetried, domain.FailedExhausted} {

@@ -14,7 +14,7 @@ import (
 // Store is what applying a status event needs from persistence.
 type Store interface {
 	ApplyIndexed(ctx context.Context, hash string, attempts int, now time.Time) (applied bool, err error)
-	ApplyFailed(ctx context.Context, hash string, attempts int, retryable bool, maxAttempts int, now time.Time) (domain.FailedOutcome, error)
+	ApplyFailed(ctx context.Context, hash string, attempts int, retryable bool, reason string, maxAttempts int, now time.Time) (domain.FailedOutcome, error)
 	// Ping reports whether the store can take a write now.
 	Ping(ctx context.Context) error
 }
@@ -88,7 +88,7 @@ func (h *Handler) Handle(ctx context.Context, entry events.StreamEntry) (ack boo
 	case events.OutcomeFailed:
 		retryable := *ev.Retryable // DecodeStatus guarantees it is set on FAILED
 		log = log.With("reason", ev.Reason, "retryable", retryable, "detail", clip(ev.Detail))
-		outcome, err := h.store.ApplyFailed(ctx, ev.Hash, ev.Attempts, retryable, h.maxAttempts, h.now())
+		outcome, err := h.store.ApplyFailed(ctx, ev.Hash, ev.Attempts, retryable, string(ev.Reason), h.maxAttempts, h.now())
 		if err != nil {
 			log.Error("apply failed errored; leaving the entry pending", "err", err)
 			return false
