@@ -156,7 +156,8 @@ def _leaves(*names: str) -> dict[str, None]:
 # Keys this reader models, per table (None marks a leaf, a dict a nested table). Used to report
 # the keys it does not model.
 _KNOWN: dict[str, Any] = {
-    "minio": _leaves("url", "access_key", "secret_key", "upload_bucket", "ingestion_bucket"),
+    # public_url is the address browsers reach MinIO at; only Go signs with it.
+    "minio": _leaves("url", "public_url", "access_key", "secret_key", "upload_bucket", "ingestion_bucket"),
     "sqlite": _leaves("dir"),
     "qdrant": _leaves("url"),
     "ollama": _leaves("url"),

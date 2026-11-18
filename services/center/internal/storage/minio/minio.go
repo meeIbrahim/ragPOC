@@ -16,9 +16,16 @@ import (
 	"center-service/internal/config"
 )
 
+// region is MinIO's default. Setting it on the presign client skips the bucket-location
+// request minio-go would otherwise make before signing.
+const region = "us-east-1"
+
 // Client provides upload, migration, and lookup operations over the upload and ingestion buckets.
 type Client struct {
-	inner           *miniogo.Client
+	inner *miniogo.Client
+	// presign signs upload URLs for public_url, the address browsers reach MinIO at. It only
+	// signs; it never dials, so public_url may be unreachable from this process.
+	presign         *miniogo.Client
 	uploadBucket    string
 	ingestionBucket string
 }
@@ -32,8 +39,21 @@ func New(cfg config.MinioConfig) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("minio: new client: %w", err)
 	}
+	public, err := url.Parse(cfg.PublicURL)
+	if err != nil {
+		return nil, fmt.Errorf("minio: public_url: %w", err)
+	}
+	presign, err := miniogo.New(public.Host, &miniogo.Options{
+		Creds:  credentials.NewStaticV4(cfg.AccessKey, cfg.SecretKey, ""),
+		Secure: public.Scheme == "https",
+		Region: region,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("minio: new presign client: %w", err)
+	}
 	return &Client{
 		inner:           inner,
+		presign:         presign,
 		uploadBucket:    cfg.UploadBucket,
 		ingestionBucket: cfg.IngestionBucket,
 	}, nil
@@ -155,9 +175,10 @@ func (c *Client) exists(ctx context.Context, bucket, objectName string) (bool, e
 	return true, nil
 }
 
-// PresignedUploadURL returns a presigned PUT URL for uploading objectName directly into the upload bucket.
+// PresignedUploadURL returns a presigned PUT URL, on public_url, for uploading objectName directly
+// into the upload bucket.
 func (c *Client) PresignedUploadURL(ctx context.Context, objectName string, expiry time.Duration) (*url.URL, error) {
-	u, err := c.inner.PresignedPutObject(ctx, c.uploadBucket, objectName, expiry)
+	u, err := c.presign.PresignedPutObject(ctx, c.uploadBucket, objectName, expiry)
 	if err != nil {
 		return nil, fmt.Errorf("minio: presigned upload url %s: %w", objectName, err)
 	}

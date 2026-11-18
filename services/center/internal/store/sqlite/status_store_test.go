@@ -12,7 +12,10 @@ import (
 	"center-service/internal/testutil"
 )
 
-const hash = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+const (
+	hash           = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+	reasonInternal = "INTERNAL"
+)
 
 var (
 	created = time.Date(2026, 1, 1, 9, 0, 0, 0, time.UTC)
@@ -141,7 +144,7 @@ func TestApplyFailedRetryableQueuesNextAttempt(t *testing.T) {
 	s, db := newStore(t)
 	insertDoc(t, db, hash, domain.DocumentProcessing, 0)
 
-	out, err := s.ApplyFailed(context.Background(), hash, 0, true, 3, now)
+	out, err := s.ApplyFailed(context.Background(), hash, 0, true, reasonInternal, 3, now)
 	if err != nil || out != domain.FailedRetried {
 		t.Fatalf("outcome=%v err=%v, want Retried", out, err)
 	}
@@ -155,7 +158,7 @@ func TestApplyFailedRetryableAtLimitMarksFailed(t *testing.T) {
 	s, db := newStore(t)
 	insertDoc(t, db, hash, domain.DocumentProcessing, 2) // attempt 2 of max 3 is the last
 
-	out, err := s.ApplyFailed(context.Background(), hash, 2, true, 3, now)
+	out, err := s.ApplyFailed(context.Background(), hash, 2, true, reasonInternal, 3, now)
 	if err != nil || out != domain.FailedExhausted {
 		t.Fatalf("outcome=%v err=%v, want Exhausted", out, err)
 	}
@@ -169,7 +172,7 @@ func TestApplyFailedPermanentMarksFailedWithoutRetry(t *testing.T) {
 	s, db := newStore(t)
 	insertDoc(t, db, hash, domain.DocumentProcessing, 0)
 
-	out, err := s.ApplyFailed(context.Background(), hash, 0, false, 3, now)
+	out, err := s.ApplyFailed(context.Background(), hash, 0, false, reasonInternal, 3, now)
 	if err != nil || out != domain.FailedExhausted {
 		t.Fatalf("outcome=%v err=%v, want Exhausted", out, err)
 	}
@@ -182,7 +185,7 @@ func TestApplyFailedPermanentMarksFailedWithoutRetry(t *testing.T) {
 func TestApplyFailedMaxAttemptsOneNeverRetries(t *testing.T) {
 	s, db := newStore(t)
 	insertDoc(t, db, hash, domain.DocumentProcessing, 0)
-	out, err := s.ApplyFailed(context.Background(), hash, 0, true, 1, now)
+	out, err := s.ApplyFailed(context.Background(), hash, 0, true, reasonInternal, 1, now)
 	if err != nil || out != domain.FailedExhausted {
 		t.Fatalf("outcome=%v err=%v, want Exhausted when max_attempts=1", out, err)
 	}
@@ -191,11 +194,11 @@ func TestApplyFailedMaxAttemptsOneNeverRetries(t *testing.T) {
 func TestApplyFailedDuplicateIsStale(t *testing.T) {
 	s, db := newStore(t)
 	insertDoc(t, db, hash, domain.DocumentProcessing, 0)
-	if _, err := s.ApplyFailed(context.Background(), hash, 0, true, 3, now); err != nil {
+	if _, err := s.ApplyFailed(context.Background(), hash, 0, true, reasonInternal, 3, now); err != nil {
 		t.Fatal(err)
 	}
 
-	out, err := s.ApplyFailed(context.Background(), hash, 0, true, 3, now.Add(time.Hour))
+	out, err := s.ApplyFailed(context.Background(), hash, 0, true, reasonInternal, 3, now.Add(time.Hour))
 	if err != nil || out != domain.FailedStale {
 		t.Fatalf("outcome=%v err=%v, want Stale for the redelivered FAILED(0)", out, err)
 	}
@@ -212,7 +215,7 @@ func TestApplyFailedAfterIndexedLeavesIndexed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, err := s.ApplyFailed(context.Background(), hash, 0, true, 3, now.Add(time.Hour))
+	out, err := s.ApplyFailed(context.Background(), hash, 0, true, reasonInternal, 3, now.Add(time.Hour))
 	if err != nil || out != domain.FailedStale {
 		t.Fatalf("outcome=%v err=%v, want Stale", out, err)
 	}
@@ -224,7 +227,7 @@ func TestApplyFailedAfterIndexedLeavesIndexed(t *testing.T) {
 
 func TestApplyFailedUnknownHashIsStale(t *testing.T) {
 	s, db := newStore(t)
-	out, err := s.ApplyFailed(context.Background(), "unknown", 0, true, 3, now)
+	out, err := s.ApplyFailed(context.Background(), "unknown", 0, true, reasonInternal, 3, now)
 	if err != nil || out != domain.FailedStale {
 		t.Fatalf("outcome=%v err=%v, want Stale", out, err)
 	}
@@ -242,7 +245,7 @@ func TestApplyFailedRollsBackWhenOutboxInsertFails(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, err := s.ApplyFailed(context.Background(), hash, 0, true, 3, now)
+	out, err := s.ApplyFailed(context.Background(), hash, 0, true, reasonInternal, 3, now)
 	if err == nil {
 		t.Fatalf("outcome=%v, want the outbox error", out)
 	}
@@ -262,7 +265,7 @@ func TestApplyFailedConcurrentDuplicatesApplyOnce(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			out, err := s.ApplyFailed(context.Background(), hash, 0, true, 3, now)
+			out, err := s.ApplyFailed(context.Background(), hash, 0, true, reasonInternal, 3, now)
 			if err != nil {
 				t.Error(err)
 			}
@@ -298,7 +301,7 @@ func TestApplyFailedFullRetryLadder(t *testing.T) {
 
 	want := []domain.FailedOutcome{domain.FailedRetried, domain.FailedRetried, domain.FailedExhausted}
 	for attempt, wantOut := range want {
-		out, err := s.ApplyFailed(context.Background(), hash, attempt, true, 3, now)
+		out, err := s.ApplyFailed(context.Background(), hash, attempt, true, reasonInternal, 3, now)
 		if err != nil || out != wantOut {
 			t.Fatalf("attempt %d: outcome=%v err=%v, want %v", attempt, out, err, wantOut)
 		}
@@ -306,6 +309,75 @@ func TestApplyFailedFullRetryLadder(t *testing.T) {
 	assertDoc(t, s, domain.DocumentFailed, 2, true)
 	if total, _ := outboxRows(t, db, hash); total != 3 {
 		t.Errorf("outbox rows = %d, want 3", total)
+	}
+}
+
+func storedReason(t *testing.T, s *sqlite.Store) *string {
+	t.Helper()
+	return getDoc(t, s, hash).FailureReason
+}
+
+func TestApplyFailedPermanentStoresTheReason(t *testing.T) {
+	s, db := newStore(t)
+	insertDoc(t, db, hash, domain.DocumentProcessing, 0)
+
+	if out, err := s.ApplyFailed(context.Background(), hash, 0, false, "CORRUPT_FILE", 3, now); err != nil || out != domain.FailedExhausted {
+		t.Fatalf("outcome=%v err=%v, want Exhausted", out, err)
+	}
+	if r := storedReason(t, s); r == nil || *r != "CORRUPT_FILE" {
+		t.Errorf("failure_reason = %v; want CORRUPT_FILE: a terminal FAILED must store the event's reason", r)
+	}
+}
+
+// Each attempt may fail for a different reason; the one that ends the ladder is the one kept.
+func TestApplyFailedExhaustedStoresTheFinalReason(t *testing.T) {
+	s, db := newStore(t)
+	insertDoc(t, db, hash, domain.DocumentProcessing, 0)
+
+	reasons := []string{"DEPENDENCY_UNAVAILABLE", "INTERNAL", "JOB_TIMEOUT"}
+	for attempt, reason := range reasons {
+		if _, err := s.ApplyFailed(context.Background(), hash, attempt, true, reason, 3, now); err != nil {
+			t.Fatalf("attempt %d: %v", attempt, err)
+		}
+		r := storedReason(t, s)
+		last := attempt == len(reasons)-1
+		if !last && r != nil {
+			t.Errorf("attempt %d: failure_reason = %q after a retry; want NULL: only a terminal FAILED may set it", attempt, *r)
+		}
+		if last && (r == nil || *r != "JOB_TIMEOUT") {
+			t.Errorf("failure_reason = %v after the last attempt; want JOB_TIMEOUT, the final event's reason", r)
+		}
+	}
+}
+
+func TestApplyFailedRetryLeavesReasonNullAndQueuesOutbox(t *testing.T) {
+	s, db := newStore(t)
+	insertDoc(t, db, hash, domain.DocumentProcessing, 0)
+
+	if out, err := s.ApplyFailed(context.Background(), hash, 0, true, "DEPENDENCY_UNAVAILABLE", 3, now); err != nil || out != domain.FailedRetried {
+		t.Fatalf("outcome=%v err=%v, want Retried", out, err)
+	}
+	if r := storedReason(t, s); r != nil {
+		t.Errorf("retried failure wrote failure_reason %q: only a terminal FAILED may set it", *r)
+	}
+	if total, pending := outboxRows(t, db, hash); total != 1 || pending != 1 {
+		t.Errorf("outbox rows total=%d pending=%d, want one PENDING row", total, pending)
+	}
+}
+
+func TestApplyFailedStaleKeepsTheStoredReason(t *testing.T) {
+	s, db := newStore(t)
+	insertDoc(t, db, hash, domain.DocumentProcessing, 0)
+	if _, err := s.ApplyFailed(context.Background(), hash, 0, false, "CORRUPT_FILE", 3, now); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := s.ApplyFailed(context.Background(), hash, 0, false, "EMPTY_TEXT", 3, now.Add(time.Hour))
+	if err != nil || out != domain.FailedStale {
+		t.Fatalf("outcome=%v err=%v, want Stale for the duplicate", out, err)
+	}
+	if r := storedReason(t, s); r == nil || *r != "CORRUPT_FILE" {
+		t.Errorf("failure_reason = %v after a stale FAILED; want CORRUPT_FILE kept: a stale event writes nothing", r)
 	}
 }
 

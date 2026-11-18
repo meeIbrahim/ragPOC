@@ -137,19 +137,51 @@ func uniqueContent(label string) []byte {
 	return []byte(fmt.Sprintf("%s %d %s", label, time.Now().UnixNano(), hex.EncodeToString(salt)))
 }
 
-func pollStatus(id string) string {
+// uploadPoll is one GET /upload/{id} answer. Reason is nil when the body has no failure_reason
+// key, so a scenario can tell an absent field from an empty one.
+type uploadPoll struct {
+	Status string  `json:"status"`
+	Reason *string `json:"failure_reason"`
+}
+
+func pollUpload(id string) (uploadPoll, error) {
 	resp, err := httpClient.Get(centerURL() + "/upload/" + id)
+	if err != nil {
+		return uploadPoll{}, fmt.Errorf("GET /upload/%s: %w", id, err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return uploadPoll{}, fmt.Errorf("GET /upload/%s = %d: %s", id, resp.StatusCode, raw)
+	}
+	var p uploadPoll
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return uploadPoll{}, fmt.Errorf("decode GET /upload/%s: %w (%s)", id, err, raw)
+	}
+	return p, nil
+}
+
+func pollStatus(id string) string {
+	p, err := pollUpload(id)
 	if err != nil {
 		return ""
 	}
-	defer resp.Body.Close()
-	var body struct {
-		Status string `json:"status"`
+	return p.Status
+}
+
+// assertFailureReason checks the poll's failure_reason: want "" means the key must be absent.
+func assertFailureReason(t *testing.T, id, want string) {
+	t.Helper()
+	p, err := pollUpload(id)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if resp.StatusCode != http.StatusOK || json.NewDecoder(resp.Body).Decode(&body) != nil {
-		return ""
+	switch {
+	case want == "" && p.Reason != nil:
+		t.Errorf("upload %s (%s) has failure_reason %q; want none: only a FAILED status carries a reason", id, p.Status, *p.Reason)
+	case want != "" && (p.Reason == nil || *p.Reason != want):
+		t.Errorf("upload %s (%s) failure_reason = %v; want %q, the reason of the event that ended it", id, p.Status, p.Reason, want)
 	}
-	return body.Status
 }
 
 // eventually polls until check returns true or the timeout passes; it never sleeps blindly.

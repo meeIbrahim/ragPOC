@@ -131,38 +131,48 @@ func (s *Service) resolveLostGate(ctx context.Context, id string, now time.Time)
 	}
 }
 
-func (s *Service) GetUploadStatus(ctx context.Context, id string) (*domain.Intent, *string, error) {
-	intent, err := s.repo.GetIntent(ctx, id)
+// GetUploadStatus returns the intent, the status the poll reports, and the failure reason. The
+// reason is set only when the status is FAILED: the stored code for a failed document (empty if
+// it failed before the column existed), or domain.ReasonUploadFailed for an upload that failed
+// in hashing and has no document.
+func (s *Service) GetUploadStatus(ctx context.Context, id string) (intent *domain.Intent, status *string, reason string, err error) {
+	intent, err = s.repo.GetIntent(ctx, id)
 	if err != nil {
 		if errors.Is(err, ErrIntentNotFound) {
-			return nil, nil, err
+			return nil, nil, "", err
 		}
-		return nil, nil, fmt.Errorf("get upload_intent: %w", err)
+		return nil, nil, "", fmt.Errorf("get upload_intent: %w", err)
 	}
-	var status string
+	var st string
 	now := s.now()
 	// At or past expires_at, matching the confirm gate (expires_at > now), so the poll never
 	// says WAITING for an upload the gate would refuse.
 	if intent.Status == domain.IntentWaiting && !now.Before(intent.ExpiresAt) {
-		status = domain.IntentExpired.String()
+		st = domain.IntentExpired.String()
 	} else if intent.Hash != nil {
 		document, err := s.GetDocument(ctx, *intent.Hash)
 		if err != nil {
-			return nil, nil, fmt.Errorf("get document: %w", err)
+			return nil, nil, "", fmt.Errorf("get document: %w", err)
 		}
 		if document == nil {
 			// The FK makes this unreachable short of corruption; never answer it with an empty status.
-			return nil, nil, fmt.Errorf("upload_intent %s links to missing document %s", id, *intent.Hash)
+			return nil, nil, "", fmt.Errorf("upload_intent %s links to missing document %s", id, *intent.Hash)
 		}
-		status = string(document.Status)
+		st = string(document.Status)
+		if document.Status == domain.DocumentFailed && document.FailureReason != nil {
+			reason = *document.FailureReason
+		}
 	} else if intent.Status == domain.IntentHashed || intent.Status == domain.IntentHashing {
-		status = string(domain.DocumentProcessing)
+		st = string(domain.DocumentProcessing)
 	} else if intent.Status == domain.IntentUnknown {
-		return nil, nil, ErrIntentUnknown
+		return nil, nil, "", ErrIntentUnknown
 	} else {
-		status = intent.Status.String()
+		st = intent.Status.String()
+		if intent.Status == domain.IntentFailed {
+			reason = domain.ReasonUploadFailed
+		}
 	}
-	return intent, &status, nil
+	return intent, &st, reason, nil
 }
 
 func (s *Service) GetDocument(ctx context.Context, hash string) (*domain.Document, error) {

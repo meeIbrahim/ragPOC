@@ -48,10 +48,11 @@ type ConfirmUploadResponse struct {
 }
 
 type UploadStatusResponse struct {
-	ID         string     `json:"id"`
-	FileName   string     `json:"filename"`
-	Status     string     `json:"status"`
-	UploadedAt *time.Time `json:"uploaded_at,omitempty"`
+	ID            string     `json:"id"`
+	FileName      string     `json:"filename"`
+	Status        string     `json:"status"`
+	UploadedAt    *time.Time `json:"uploaded_at,omitempty"`
+	FailureReason string     `json:"failure_reason,omitempty"` // only when Status is FAILED
 }
 
 func (h *Handlers) CreateUpload(w http.ResponseWriter, r *http.Request) {
@@ -131,7 +132,7 @@ func (h *Handlers) GetUploadStatus(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "id is required", http.StatusBadRequest)
 		return
 	}
-	intent, status, err := h.svc.GetUploadStatus(r.Context(), id)
+	intent, status, reason, err := h.svc.GetUploadStatus(r.Context(), id)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrIntentNotFound):
@@ -146,10 +147,11 @@ func (h *Handlers) GetUploadStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := UploadStatusResponse{
-		ID:         intent.ID,
-		FileName:   intent.FileName,
-		Status:     *status,
-		UploadedAt: intent.UploadedAt,
+		ID:            intent.ID,
+		FileName:      intent.FileName,
+		Status:        *status,
+		UploadedAt:    intent.UploadedAt,
+		FailureReason: reason,
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, resp)

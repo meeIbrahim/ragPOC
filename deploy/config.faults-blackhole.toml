@@ -11,6 +11,7 @@
 # The MinIO credentials are the local development defaults from docker-compose.yml: POC only.
 [minio]
 url="minio:9000"
+public_url="http://minio:9000"
 access_key="minio_user"
 secret_key="minio_password"
 upload_bucket="upload-bucket"
@@ -99,6 +100,12 @@ sqlite_dir="/data/go"
 
 [go.ask]
 deadline="3m"
+
+[go.documents]
+max_entries=500
+
+[go.ui]
+static_dir=""
 
 [go.status_consumer]
 entry_timeout="5s"

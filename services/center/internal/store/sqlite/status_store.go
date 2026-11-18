@@ -33,9 +33,10 @@ func (s *Store) ApplyIndexed(ctx context.Context, hash string, attempts int, now
 // The compare-and-swap guard is the same as ApplyIndexed. When the failure is retryable and
 // attempts+1 is still below maxAttempts, the retries counter moves to attempts+1 and one
 // outbox row is inserted in the same transaction, so the document never claims a retry that
-// no event will carry. Otherwise the document becomes FAILED and nothing is queued.
-// retries only grows; it is never reset.
-func (s *Store) ApplyFailed(ctx context.Context, hash string, attempts int, retryable bool, maxAttempts int, now time.Time) (domain.FailedOutcome, error) {
+// no event will carry. Otherwise the document becomes FAILED with failure_reason = reason and
+// nothing is queued; a retry leaves failure_reason untouched. retries only grows; it is never
+// reset.
+func (s *Store) ApplyFailed(ctx context.Context, hash string, attempts int, retryable bool, reason string, maxAttempts int, now time.Time) (domain.FailedOutcome, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return domain.FailedStale, fmt.Errorf("begin tx: %w", err)
@@ -51,9 +52,9 @@ func (s *Store) ApplyFailed(ctx context.Context, hash string, attempts int, retr
 			WHERE hash = ? AND retries = ? AND status = ?`
 		args = []any{attempts + 1, now, hash, attempts, domain.DocumentProcessing}
 	} else {
-		update = `UPDATE document_store SET status = ?, updated_at = ?
+		update = `UPDATE document_store SET status = ?, failure_reason = ?, updated_at = ?
 			WHERE hash = ? AND retries = ? AND status = ?`
-		args = []any{domain.DocumentFailed, now, hash, attempts, domain.DocumentProcessing}
+		args = []any{domain.DocumentFailed, reason, now, hash, attempts, domain.DocumentProcessing}
 	}
 	res, err := tx.ExecContext(ctx, update, args...)
 	if err != nil {
