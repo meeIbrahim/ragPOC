@@ -1,0 +1,21 @@
+.name {
+  display: flex;
+  min-width: 0;
+  font: var(--text-body);
+  color: var(--color-text);
+}
+
+.strong {
+  font: var(--text-body-strong);
+}
+
+.head {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tail {
+  flex: none;
+  white-space: nowrap;
+}
