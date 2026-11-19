@@ -22,7 +22,7 @@ services:
     environment:
       MINIO_ROOT_USER: minio_user
       MINIO_ROOT_PASSWORD: minio_password
-      MINIO_API_CORS_ALLOW_ORIGIN: http://localhost:8080
+      MINIO_API_CORS_ALLOW_ORIGIN: http://localhost:8080,http://localhost:5173
     volumes:
       - ./ingestion_docs/data:/data
     command: server /data --console-address ":9001"
