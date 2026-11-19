@@ -25,7 +25,8 @@ function isVisible() {
 }
 
 /**
- * GET /documents on mount, then every POLL_INTERVAL_MS while `active` and the tab is visible.
+ * GET /documents on mount, then every POLL_INTERVAL_MS while the tab is visible and either
+ * `active` (local uploads in flight) or any entry is PROCESSING (design 3.5).
  * A failed poll keeps the current entries. Becoming visible fetches at once.
  */
 export function useDocuments(active: boolean) {
@@ -97,13 +98,15 @@ export function useDocuments(active: boolean) {
     return () => document.removeEventListener("visibilitychange", onChange);
   }, [fetchNow]);
 
+  const polling = active || state.entries.some((e) => e.status === "PROCESSING");
+
   useEffect(() => {
-    if (!active || !visible) {
+    if (!polling || !visible) {
       return undefined;
     }
     const id = setInterval(() => void fetchNow(), POLL_INTERVAL_MS);
     return () => clearInterval(id);
-  }, [active, visible, fetchNow]);
+  }, [polling, visible, fetchNow]);
 
   return {
     entries: state.entries,

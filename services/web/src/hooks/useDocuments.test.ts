@@ -48,6 +48,20 @@ describe("useDocuments", () => {
     expect(calls).toHaveLength(3);
   });
 
+  test("a PROCESSING entry keeps polling on its own until it settles", async () => {
+    let status = "PROCESSING";
+    const { calls } = fakeFetch(() => json(200, listBody([wireDoc({ id: "a", status })])));
+    renderHook(() => useDocuments(false));
+    await tick(0);
+    await tick(POLL_INTERVAL_MS);
+    expect(calls).toHaveLength(2);
+    status = "INDEXED";
+    await tick(POLL_INTERVAL_MS);
+    expect(calls).toHaveLength(3);
+    await tick(POLL_INTERVAL_MS * 3);
+    expect(calls, "settled: polling stops").toHaveLength(3);
+  });
+
   test("an initial failure is a failed load; refresh() retries at once", async () => {
     let fail = true;
     const { calls } = fakeFetch(() => (fail ? networkError() : json(200, listBody([wireDoc({ id: "a" })]))));
