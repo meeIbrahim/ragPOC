@@ -1,0 +1,37 @@
+.answer {
+  max-width: var(--size-answer-max);
+  font: var(--text-body);
+  color: var(--color-text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.pill {
+  display: inline;
+  margin: 0 1px;
+  padding: 0 var(--space-1);
+  border: 1px solid var(--color-accent);
+  border-radius: var(--radius-badge);
+  background: transparent;
+  font: var(--text-caption);
+  color: var(--color-accent);
+  cursor: pointer;
+  vertical-align: baseline;
+}
+
+.caret {
+  color: var(--color-text-muted);
+  animation: blink var(--duration-caret) steps(2) infinite;
+}
+
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .caret {
+    animation: none;
+  }
+}
