@@ -1,5 +1,6 @@
 // Wire types mirror the Go JSON (snake_case, PRD 4.6). Domain types are camelCase; each has one
-// explicit from… mapper (spec A4). Mappers never throw on a missing field.
+// explicit from… mapper (spec A4). Mappers default a missing field; fromUpload throws only when
+// the presigned URL is missing, because no upload can work without it.
 
 export type EntryStatus = "PROCESSING" | "INDEXED" | "FAILED";
 
@@ -66,6 +67,11 @@ function toStatus(s: string): EntryStatus {
   return s === "INDEXED" || s === "FAILED" ? s : "PROCESSING";
 }
 
+function parseTime(s: string | undefined): number {
+  const t = s ? Date.parse(s) : Number.NaN;
+  return Number.isFinite(t) ? t : Date.now();
+}
+
 export function fromDocument(w: WireDocument): DocumentEntry {
   return {
     id: w.id,
@@ -73,7 +79,7 @@ export function fromDocument(w: WireDocument): DocumentEntry {
     filename: w.filename ?? "",
     status: toStatus(w.status),
     failureReason: w.failure_reason || undefined,
-    createdAt: Date.parse(w.created_at),
+    createdAt: parseTime(w.created_at),
   };
 }
 
@@ -85,9 +91,16 @@ export function fromDocumentList(w: WireDocumentList): DocumentList {
 }
 
 export function fromUpload(w: WireUpload): Upload {
+  if (!w?.upload_url) {
+    throw new Error("POST /upload answered without upload_url");
+  }
   return { id: w.id, filename: w.filename, uploadUrl: w.upload_url };
 }
 
 export function fromSources(w: { sources: WireSource[] }): Source[] {
-  return (w?.sources ?? []).map((s) => ({ filename: s.filename, snippet: s.snippet, score: s.score }));
+  return (w?.sources ?? []).map((s) => ({
+    filename: s.filename ?? "",
+    snippet: s.snippet ?? "",
+    score: Number.isFinite(s.score) ? s.score : 0,
+  }));
 }

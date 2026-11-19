@@ -14,22 +14,30 @@ export function putFile(url: string, file: File, onProgress: (fraction: number) 
         onProgress(e.loaded / e.total);
       }
     };
+    const onAbort = () => xhr.abort();
+    const settle = () => signal?.removeEventListener("abort", onAbort);
     xhr.onload = () => {
+      settle();
       if (xhr.status >= 200 && xhr.status < 300) {
         resolve();
       } else {
         reject(new ApiError("server", `Upload storage answered ${xhr.status}.`, xhr.status));
       }
     };
-    xhr.onerror = () => reject(new ApiError("network", "Couldn't reach upload storage."));
-    xhr.onabort = () => reject(new ApiError("aborted", "upload aborted"));
-    if (signal) {
-      if (signal.aborted) {
-        xhr.abort();
-        return;
-      }
-      signal.addEventListener("abort", () => xhr.abort(), { once: true });
+    xhr.onerror = () => {
+      settle();
+      reject(new ApiError("network", "Couldn't reach upload storage."));
+    };
+    xhr.onabort = () => {
+      settle();
+      reject(new ApiError("aborted", "upload aborted"));
+    };
+    if (signal?.aborted) {
+      // abort() before send() fires no abort event, so settle here.
+      reject(new ApiError("aborted", "upload aborted"));
+      return;
     }
+    signal?.addEventListener("abort", onAbort, { once: true });
     xhr.send(file);
   });
 }

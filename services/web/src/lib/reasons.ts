@@ -10,7 +10,7 @@ const texts: Readonly<Record<string, string>> = {
   UPLOAD_FAILED: "The upload couldn't be processed. Try uploading again.",
 };
 
-export const FALLBACK_REASON = "Indexing failed.";
+const FALLBACK_REASON = "Indexing failed.";
 
 export function reasonText(code: string | undefined): string {
   return code && Object.hasOwn(texts, code) ? (texts[code] as string) : FALLBACK_REASON;

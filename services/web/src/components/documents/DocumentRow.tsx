@@ -44,10 +44,22 @@ export function DocumentRow({ row, selected, active, flash, onActivate, onRetry,
         </span>
         {row.retryable && (
           <span className={styles.actions}>
-            <Button variant="ghost" onClick={(e) => (e.stopPropagation(), onRetry())}>
+            <Button
+              variant="ghost"
+              onClick={(e) => {
+                e.stopPropagation();
+                onRetry();
+              }}
+            >
               Retry
             </Button>
-            <Button variant="ghost" onClick={(e) => (e.stopPropagation(), onDismiss())}>
+            <Button
+              variant="ghost"
+              onClick={(e) => {
+                e.stopPropagation();
+                onDismiss();
+              }}
+            >
               Dismiss
             </Button>
           </span>

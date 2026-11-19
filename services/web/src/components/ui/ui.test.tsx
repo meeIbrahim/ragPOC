@@ -122,7 +122,7 @@ describe("LiveRegion", () => {
     const region = screen.getByRole("status");
     expect(region).toHaveAttribute("aria-live", "polite");
     await user.click(screen.getByRole("button", { name: "say" }));
-    expect(region).toHaveTextContent("Answer ready, 3 sources");
+    expect(region).toHaveTextContent(/^Answer ready, 3 sources$/);
     const first = region.firstElementChild;
     await user.click(screen.getByRole("button", { name: "say" }));
     expect(region.firstElementChild, "a repeat must replace the node so it is read again").not.toBe(first);

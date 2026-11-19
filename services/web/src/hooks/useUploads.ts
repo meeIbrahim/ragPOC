@@ -148,7 +148,10 @@ export function useUploads({ entries, version, onConfirmed, onMerged }: Options)
       const id = item.uploadId;
       const match = entries.find((e) => e.uploadIds.includes(id));
       if (!match) {
-        next.push(item.phase === "processing" ? { ...item, polls: item.polls + 1 } : item);
+        // A watched upload whose own entry left the list is not coming back: stop watching it.
+        if (item.phase === "processing") {
+          next.push({ ...item, polls: item.polls + 1 });
+        }
       } else if (match.id !== id) {
         merges.push({ filename: item.filename, entry: match });
       } else if (match.status === "PROCESSING") {

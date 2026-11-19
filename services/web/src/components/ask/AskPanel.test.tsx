@@ -95,7 +95,7 @@ describe("one question, start to finish", () => {
     expect(s.calls[0]).toEqual({ question: "Who owns a value?", ids: ["u1", "u2"] });
     expect(screen.getByText("Searching documents…")).toBeInTheDocument();
     expect(screen.getByText("Who owns a value?", { selector: "p" })).toBeInTheDocument();
-    expect(status()).toHaveTextContent("Searching documents");
+    expect(status()).toHaveTextContent(/^Searching documents$/);
     expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument();
 
     await s.push({ type: "sources", sources: [src(1), src(2)] });
@@ -105,7 +105,7 @@ describe("one question, start to finish", () => {
     await s.push({ type: "delta", text: "Each value has one owner [1]." });
     expect(screen.getByRole("button", { name: "Source 1: f1.md" })).toBeInTheDocument();
     expect(screen.getByText("▍")).toBeInTheDocument();
-    expect(status()).toHaveTextContent("Answer started");
+    expect(status()).toHaveTextContent(/^Answer started$/);
     expect(screen.getByTestId("answer-text").closest("[aria-live]"), "the answer region is never live").toBeNull();
 
     vi.setSystemTime(1_006_200);
@@ -113,7 +113,7 @@ describe("one question, start to finish", () => {
     expect(screen.queryByText("▍")).not.toBeInTheDocument();
     expect(screen.getByText("Answered from 2 sources · 6.2 s")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Copy answer" })).toBeInTheDocument();
-    expect(status()).toHaveTextContent("Answer ready, 2 sources");
+    expect(status()).toHaveTextContent(/^Answer ready, 2 sources$/);
     expect(box()).toHaveValue("");
     expect(box()).toHaveFocus();
   });
@@ -172,7 +172,7 @@ describe("stop (design 5.1, 5.2)", () => {
     expect(screen.getByTestId("answer-text")).toHaveTextContent("partial");
     expect(screen.getByRole("heading", { name: "Sources" })).toBeInTheDocument();
     expect(box()).toHaveValue("why?");
-    expect(status()).toHaveTextContent("Stopped");
+    expect(status()).toHaveTextContent(/^Stopped$/);
     expect(screen.getByRole("button", { name: "Ask" })).toBeInTheDocument();
   });
 
@@ -213,9 +213,10 @@ describe("errors (design 5.2)", () => {
     await s.push({ type: "error", code: "INTERNAL", message: "rag service failed" });
     expect(screen.getByRole("alert")).toHaveTextContent("Something went wrong while answering.");
     expect(screen.getByRole("alert")).toHaveTextContent("rag service failed");
+    expect(screen.getByRole("alert")).not.toHaveTextContent("Try again in a moment.");
     await user.click(screen.getByRole("button", { name: "Try again" }));
     await s.push({ type: "connectionLost" });
-    expect(screen.getByRole("alert")).toHaveTextContent("The connection was lost.");
+    expect(screen.getByRole("alert")).toHaveTextContent(/^The connection was lost\.Try again$/);
   });
 
   test("a 400 about the question shows under the textarea; one about the selection under the scope line", async () => {

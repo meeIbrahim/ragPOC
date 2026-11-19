@@ -112,6 +112,19 @@ describe("useAsk", () => {
     expect(result.current.state).toMatchObject({ phase: "error", kind: "connectionLost", answer: "x" });
   });
 
+  test("a stream that throws ends as a lost connection, not an unhandled rejection", async () => {
+    const throwing: AskStreamFn = async function* () {
+      yield { type: "delta", text: "x" };
+      throw new Error("boom");
+    };
+    const { result } = renderHook(() => useAsk(throwing));
+    await act(async () => {
+      result.current.ask("q", []);
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(result.current.state).toMatchObject({ phase: "error", kind: "connectionLost", answer: "x" });
+  });
+
   test("retry() resends the same question and scope", async () => {
     const s = controlled();
     const { result } = renderHook(() => useAsk(s.fn));

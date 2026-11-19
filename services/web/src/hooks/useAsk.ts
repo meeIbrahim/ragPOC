@@ -58,50 +58,55 @@ export function useAsk(stream: AskStreamFn = askStream) {
       let sources: Source[] = [];
       let answer = "";
       let nothing = false;
-      for await (const e of stream(question, ids, ctrl.signal)) {
-        if (current.current !== ctrl) {
-          return;
+      try {
+        for await (const e of stream(question, ids, ctrl.signal)) {
+          if (current.current !== ctrl) {
+            return;
+          }
+          switch (e.type) {
+            case "sources":
+              sources = e.sources.slice(0, MAX_SOURCES_SHOWN);
+              nothing = sources.length === 0;
+              set(nothing ? { phase: "nothingRelevant", question, hadSelection: ids.length > 0 } : { phase: "sources", question, sources });
+              break;
+            case "delta":
+              if (!nothing) {
+                answer += e.text;
+                set({ phase: "streaming", question, sources, answer });
+              }
+              break;
+            case "done":
+              if (!nothing) {
+                set({ phase: "done", question, sources, answer, elapsedMs: Date.now() - started });
+              }
+              break;
+            case "error":
+              set({
+                phase: "error",
+                kind: e.code === "UNAVAILABLE" ? "unavailable" : "other",
+                message: e.message,
+                question,
+                sources,
+                answer,
+              });
+              break;
+            case "failed":
+              set({ phase: "error", kind: "other", message: e.message, question, sources, answer });
+              break;
+            case "connectionLost":
+              set({ phase: "error", kind: "connectionLost", message: "", question, sources, answer });
+              break;
+            case "invalid":
+              set({ phase: "invalid", message: e.message, target: e.message.includes("upload_id") ? "selection" : "question", question });
+              break;
+            case "stopped":
+              set({ phase: "stopped", question, sources, answer });
+              break;
+          }
         }
-        switch (e.type) {
-          case "sources":
-            sources = e.sources.slice(0, MAX_SOURCES_SHOWN);
-            nothing = sources.length === 0;
-            set(nothing ? { phase: "nothingRelevant", question, hadSelection: ids.length > 0 } : { phase: "sources", question, sources });
-            break;
-          case "delta":
-            if (!nothing) {
-              answer += e.text;
-              set({ phase: "streaming", question, sources, answer });
-            }
-            break;
-          case "done":
-            if (!nothing) {
-              set({ phase: "done", question, sources, answer, elapsedMs: Date.now() - started });
-            }
-            break;
-          case "error":
-            set({
-              phase: "error",
-              kind: e.code === "UNAVAILABLE" ? "unavailable" : "other",
-              message: e.message,
-              question,
-              sources,
-              answer,
-            });
-            break;
-          case "failed":
-            set({ phase: "error", kind: "other", message: e.message, question, sources, answer });
-            break;
-          case "connectionLost":
-            set({ phase: "error", kind: "connectionLost", message: "", question, sources, answer });
-            break;
-          case "invalid":
-            set({ phase: "invalid", message: e.message, target: e.message.includes("upload_id") ? "selection" : "question", question });
-            break;
-          case "stopped":
-            set({ phase: "stopped", question, sources, answer });
-            break;
-        }
+      } catch {
+        // askStream turns every outcome into an event; anything thrown here is a broken stream.
+        set({ phase: "error", kind: "connectionLost", message: "", question, sources, answer });
       }
       if (current.current === ctrl) {
         current.current = null;

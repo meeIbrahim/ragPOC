@@ -91,8 +91,11 @@ wait_indexed() {
 ask() {
   local body
   body="$(jq -cn --arg q "$1" --argjson ids "$2" '{question: $q, upload_ids: $ids}')"
-  curl -sN -m "$ASK_TIMEOUT" -X POST "$CENTER/ask" -H 'Content-Type: application/json' -d "$body" |
-    awk '/^event: /{ev=substr($0,8)} /^data: /{print "{\"event\":\"" ev "\",\"data\":" substr($0,7) "}"}'
+  local raw
+  # A timeout (curl exit 28) would otherwise end the script under set -e with no FAIL line.
+  raw="$(curl -sN -m "$ASK_TIMEOUT" -X POST "$CENTER/ask" -H 'Content-Type: application/json' -d "$body")" ||
+    fail "POST /ask failed or took longer than ${ASK_TIMEOUT}s"
+  awk '/^event: /{ev=substr($0,8)} /^data: /{print "{\"event\":\"" ev "\",\"data\":" substr($0,7) "}"}' <<<"$raw"
 }
 
 # ---- Steps

@@ -104,7 +104,7 @@ describe("the normal flow", () => {
 
     docs = [wireDoc({ id: "u-new", filename: "kubernetes-pods.md", status: "INDEXED", created_at: new Date(T0 + 50_000).toISOString() })];
     await tick(POLL_INTERVAL_MS);
-    expect(status()).toHaveTextContent("kubernetes-pods.md is indexed.");
+    expect(status()).toHaveTextContent(/^kubernetes-pods\.md is indexed\.$/);
     const row = screen.getByRole("option", { name: /^kubernetes-pods\.md, Indexed/ });
     expect(screen.getByRole("button", { name: "Summarize kubernetes pods" })).toBeInTheDocument();
 
@@ -119,8 +119,8 @@ describe("the normal flow", () => {
       { type: "delta", text: "A pod is the smallest unit [1]." },
       { type: "done" },
     );
-    expect(screen.getByText(/Answered from 1 source ·/)).toBeInTheDocument();
-    expect(status()).toHaveTextContent("Answer ready, 1 source");
+    expect(screen.getByText(/^Answered from 1 source · \d+\.\d s$/)).toBeInTheDocument();
+    expect(status()).toHaveTextContent(/^Answer ready, 1 source$/);
 
     await user.click(screen.getByRole("button", { name: "Clear" }));
     expect(screen.getByText("Searching all indexed documents")).toBeInTheDocument();

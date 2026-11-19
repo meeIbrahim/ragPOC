@@ -23,7 +23,13 @@ function isAbort(e: unknown, signal: AbortSignal): boolean {
   return signal.aborted || (e instanceof DOMException && e.name === "AbortError");
 }
 
-function parse(event: string, data: string): AskEvent | undefined {
+const known = new Set(["sources", "delta", "done", "error"]);
+
+/** undefined for an unknown event name (ignored); "malformed" for a known one that won't parse. */
+function parse(event: string, data: string): AskEvent | "malformed" | undefined {
+  if (!known.has(event)) {
+    return undefined;
+  }
   try {
     const body = JSON.parse(data) as Record<string, unknown>;
     switch (event) {
@@ -39,7 +45,8 @@ function parse(event: string, data: string): AskEvent | undefined {
         return undefined;
     }
   } catch {
-    return undefined;
+    // A dropped delta would end "done" with a gap in the answer; treat it as a broken stream.
+    return "malformed";
   }
 }
 
@@ -79,6 +86,10 @@ export async function* askStream(question: string, uploadIds: string[], signal: 
       }
       for (const raw of parser.push(decoder.decode(value, { stream: true }))) {
         const e = parse(raw.event, raw.data);
+        if (e === "malformed") {
+          yield { type: "connectionLost" };
+          return;
+        }
         if (!e) {
           continue;
         }
@@ -97,9 +108,8 @@ export async function* askStream(question: string, uploadIds: string[], signal: 
     return;
   } finally {
     reader.releaseLock();
-    if (signal.aborted) {
-      res.body.cancel().catch(() => {});
-    }
+    // Release the connection even when the server would close it after a terminal event.
+    res.body.cancel().catch(() => {});
   }
   yield signal.aborted ? { type: "stopped" } : { type: "connectionLost" };
 }

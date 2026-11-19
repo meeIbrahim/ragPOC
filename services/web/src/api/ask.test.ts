@@ -49,6 +49,11 @@ describe("askStream", () => {
     expect(await collect()).toEqual([{ type: "done" }]);
   });
 
+  test("a malformed known event ends the stream as a lost connection, never a silent gap", async () => {
+    fakeFetch(() => sseResponse([event("delta", { text: "a" }), "event: delta\ndata: {not json\n\n", event("done", {})]));
+    expect(await collect()).toEqual([{ type: "delta", text: "a" }, { type: "connectionLost" }]);
+  });
+
   test("a 400 before the stream keeps the server's text", async () => {
     fakeFetch(() => text(400, "at most 100 upload_ids may be selected"));
     expect(await collect()).toEqual([{ type: "invalid", message: "at most 100 upload_ids may be selected" }]);

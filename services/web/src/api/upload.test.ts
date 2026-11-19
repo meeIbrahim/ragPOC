@@ -39,6 +39,12 @@ test("a network error rejects as network", async () => {
   await expect(done).rejects.toMatchObject({ kind: "network" });
 });
 
+test("an already-aborted signal rejects at once", async () => {
+  const ctrl = new AbortController();
+  ctrl.abort();
+  await expect(putFile("http://minio/x", file, () => {}, ctrl.signal)).rejects.toMatchObject({ kind: "aborted" });
+});
+
 test("abort through the signal stops the PUT", async () => {
   const ctrl = new AbortController();
   const done = putFile("http://minio/x", file, () => {}, ctrl.signal);

@@ -166,6 +166,15 @@ describe("matching the server list", () => {
     },
   );
 
+  test("a watched upload whose entry leaves the list stops being watched", async () => {
+    const { result, poll, onMerged } = await confirmed();
+    poll([entry("u1", { status: "PROCESSING" })]);
+    poll([]);
+    poll([entry("old", { upload_ids: ["old", "u1"] })]);
+    expect(onMerged).not.toHaveBeenCalled();
+    expect(result.current.active).toBe(false);
+  });
+
   test("an own entry that reaches INDEXED stops the watch", async () => {
     const { poll, onMerged } = await confirmed();
     poll([entry("u1", { status: "PROCESSING" })]);

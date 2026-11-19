@@ -56,6 +56,22 @@ test("an upload response maps upload_url to uploadUrl", () => {
   ).toEqual({ id: "u1", filename: "a.md", uploadUrl: "http://minio/x" });
 });
 
+test("a source without a numeric score reads 0, so rendering never throws", () => {
+  expect(fromSources({ sources: [{ filename: "a.md", snippet: "s" } as never] })[0]?.score).toBe(0);
+});
+
+test("a missing or invalid created_at falls back to now, never NaN", () => {
+  const [entry] = fromDocumentList({
+    documents: [{ id: "u1", upload_ids: ["u1"], filename: "a.md", status: "INDEXED", created_at: "garbage" }],
+    truncated: false,
+  }).documents;
+  expect(Number.isFinite(entry?.createdAt)).toBe(true);
+});
+
+test("an upload response without upload_url is rejected", () => {
+  expect(() => fromUpload({ id: "u1", filename: "a.md" } as never)).toThrow(/upload_url/);
+});
+
 test("sources map one to one; a missing list is empty", () => {
   expect(fromSources({ sources: [{ filename: "a.md", snippet: "s", score: 0.71 }] })).toEqual([
     { filename: "a.md", snippet: "s", score: 0.71 },
