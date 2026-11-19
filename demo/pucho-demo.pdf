@@ -1,0 +1,99 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [4 0 R 6 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
+endobj
+5 0 obj
+<< /Length 3618 >>
+stream
+BT
+/F1 11 Tf
+15 TL
+72 720 Td
+(Pucho demo sample) Tj T*
+() Tj T*
+(This two-page sample was made for the Pucho demo. It reproduces the opening of the) Tj T*
+(chapter "The Carew Murder Case" from The Strange Case of Dr Jekyll and Mr Hyde by) Tj T*
+(Robert Louis Stevenson \(1886, public domain, text from Project Gutenberg\). The file) Tj T*
+(is synthetic: demo/make_pdf.py generates it, so it indexes in seconds.) Tj T*
+() Tj T*
+(Nearly a year later, in the month of October, 18ó, London was startled by a crime of) Tj T*
+(singular ferocity and rendered all the more notable by the high position of the) Tj T*
+(victim. The details were few and startling. A maid servant living alone in a house) Tj T*
+(not far from the river, had gone upstairs to bed about eleven. Although a fog rolled) Tj T*
+(over the city in the small hours, the early part of the night was cloudless, and the) Tj T*
+(lane, which the maidís window overlooked, was brilliantly lit by the full moon. It) Tj T*
+(seems she was romantically given, for she sat down upon her box, which stood) Tj T*
+(immediately under the window, and fell into a dream of musing. Never \(she used to) Tj T*
+(say, with streaming tears, when she narrated that experience\), never had she felt) Tj T*
+(more at peace with all men or thought more kindly of the world. And as she so sat) Tj T*
+(she became aware of an aged beautiful gentleman with white hair, drawing near along) Tj T*
+(the lane; and advancing to meet him, another and very small gentleman, to whom at) Tj T*
+(first she paid less attention. When they had come within speech \(which was just) Tj T*
+(under the maidís eyes\) the older man bowed and accosted the other with a very pretty) Tj T*
+(manner of politeness. It did not seem as if the subject of his address were of great) Tj T*
+(importance; indeed, from his pointing, it sometimes appeared as if he were only) Tj T*
+(inquiring his way; but the moon shone on his face as he spoke, and the girl was) Tj T*
+(pleased to watch it, it seemed to breathe such an innocent and old-world kindness of) Tj T*
+(disposition, yet with something high too, as of a well-founded self-content.) Tj T*
+(Presently her eye wandered to the other, and she was surprised to recognise in him a) Tj T*
+(certain Mr. Hyde, who had once visited her master and for whom she had conceived a) Tj T*
+(dislike. He had in his hand a heavy cane, with which he was trifling; but he) Tj T*
+(answered never a word, and seemed to listen with an ill-contained impatience. And) Tj T*
+(then all of a sudden he broke out in a great flame of anger, stamping with his foot,) Tj T*
+(brandishing the cane, and carrying on \(as the maid described it\) like a madman. The) Tj T*
+(old gentleman took a step back, with the air of one very much surprised and a trifle) Tj T*
+(hurt; and at that Mr. Hyde broke out of all bounds and clubbed him to the earth. And) Tj T*
+(next moment, with ape-like fury, he was trampling his victim under foot and hailing) Tj T*
+(down a storm of blows, under which the bones were audibly shattered and the body) Tj T*
+(jumped upon the roadway. At the horror of these sights and sounds, the maid fainted.) Tj T*
+() Tj T*
+(It was two oíclock when she came to herself and called for the police. The murderer) Tj T*
+(was gone long ago; but there lay his victim in the middle of the lane, incredibly) Tj T*
+(mangled. The stick with which the deed had been done, although it was of some rare) Tj T*
+(and very tough and heavy wood, had broken in the middle under the stress of this) Tj T*
+(insensate cruelty; and one splintered half had rolled in the neighbouring gutteróthe) Tj T*
+ET
+endstream
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 7 0 R >>
+endobj
+7 0 obj
+<< /Length 340 >>
+stream
+BT
+/F1 11 Tf
+15 TL
+72 720 Td
+(other, without doubt, had been carried away by the murderer. A purse and gold watch) Tj T*
+(were found upon the victim: but no cards or papers, except a sealed and stamped) Tj T*
+(envelope, which he had been probably carrying to the post, and which bore the name) Tj T*
+(and address of Mr. Utterson.) Tj T*
+ET
+endstream
+endobj
+xref
+0 8
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000127 00000 n 
+0000000224 00000 n 
+0000000350 00000 n 
+0000004019 00000 n 
+0000004145 00000 n 
+trailer
+<< /Size 8 /Root 1 0 R >>
+startxref
+4535
+%%EOF
