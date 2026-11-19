@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -69,5 +70,43 @@ func TestWorkerConfigsComeFromTheTOMLTables(t *testing.T) {
 	}
 	if outboxConfig(config.OutboxConfig{WorkerConfig: w, SchemaVersion: 1}, fault{outboxHangAfterPublish: true}).HangAfterPublish != true {
 		t.Error("outbox-hang-after-publish did not reach the outbox config")
+	}
+}
+
+// compose-demo D5: run() loads the config through loadConfig before it opens the database or
+// starts a worker, so a bad static_dir stops the API without claiming rows.
+func TestLoadConfigChecksStaticDir(t *testing.T) {
+	repo, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	withDir := func(t *testing.T, dir string) string {
+		t.Helper()
+		body := strings.Replace(string(repo), `static_dir=""`, `static_dir="`+dir+`"`, 1)
+		if body == string(repo) {
+			t.Fatal(`config.toml has no static_dir="" line to replace`)
+		}
+		path := filepath.Join(t.TempDir(), "config.toml")
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+
+	bad := filepath.Join(t.TempDir(), "no-such-dir")
+	if _, err := loadConfig(withDir(t, bad)); err == nil || !strings.Contains(err.Error(), "go.ui.static_dir") {
+		t.Fatalf("loadConfig with a missing static_dir = %v; want a go.ui.static_dir error", err)
+	}
+
+	site := t.TempDir()
+	if err := os.WriteFile(filepath.Join(site, "index.html"), []byte("<html></html>"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadConfig(withDir(t, site))
+	if err != nil {
+		t.Fatalf("loadConfig with a valid static_dir = %v", err)
+	}
+	if cfg.Go.UI.StaticDir != site {
+		t.Errorf("static_dir = %q; want %q", cfg.Go.UI.StaticDir, site)
 	}
 }

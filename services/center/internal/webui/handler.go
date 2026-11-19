@@ -2,10 +2,37 @@
 package webui
 
 import (
+	"fmt"
 	"io/fs"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 )
+
+// CheckDir accepts "" (no UI) or a directory holding a regular index.html. The API calls it at
+// startup, before it opens the database, so a typo or an image built without the UI exits
+// instead of serving 404s.
+func CheckDir(dir string) error {
+	if dir == "" {
+		return nil
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		return fmt.Errorf("%q must be an existing directory: %v", dir, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%q must be a directory", dir)
+	}
+	index, err := os.Stat(filepath.Join(dir, "index.html"))
+	if err != nil {
+		return fmt.Errorf("%q must contain index.html: %v", dir, err)
+	}
+	if !index.Mode().IsRegular() {
+		return fmt.Errorf("%q: index.html must be a regular file", dir)
+	}
+	return nil
+}
 
 // Handler serves the files in dir. It is mounted at "/" for every method (a "GET /" pattern
 // would overlap "/upload/" and make ServeMux panic), so it answers 405 itself for anything but

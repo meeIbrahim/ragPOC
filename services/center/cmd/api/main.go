@@ -59,6 +59,19 @@ func main() {
 	}
 }
 
+// loadConfig loads the config and checks static_dir. run calls it before anything else, so a bad
+// UI folder stops the API before it opens the database, claims rows or starts a worker.
+func loadConfig(path string) (*config.Config, error) {
+	cfg, err := config.Load(path)
+	if err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
+	if err := webui.CheckDir(cfg.Go.UI.StaticDir); err != nil {
+		return nil, fmt.Errorf("config: go.ui.static_dir %w", err)
+	}
+	return cfg, nil
+}
+
 // run holds everything that needs deferred cleanup, so an error returns through the defers
 // instead of exiting the process past them.
 func run() error {
@@ -66,9 +79,9 @@ func run() error {
 	flag.Parse()
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
-	cfg, err := config.Load(*configPath)
+	cfg, err := loadConfig(*configPath)
 	if err != nil {
-		return fmt.Errorf("config: %w", err)
+		return err
 	}
 	if len(cfg.UnknownKeys) > 0 {
 		logger.Warn("config has keys this service does not read", "keys", cfg.UnknownKeys)
