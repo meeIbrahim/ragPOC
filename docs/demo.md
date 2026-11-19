@@ -31,8 +31,8 @@ time (ports 8080, 9000, 50051): run `make down` in the other checkout first.
    - pre-flight "Ollama": start Ollama or pull the model.
    - pre-flight "rag-server is not healthy": the stack was started without `GROQ_API_KEY`.
    - step 4 "the answer failed … Check GROQ_API_KEY": the key is wrong or Groq is down.
-3. `make demo` leaves `demo-…` rows in the list. Run it before a reset if you want a clean screen,
-   or leave them as the "already indexed" documents for the walk-through.
+3. `make demo` leaves `demo-…` rows in the list, and later uploads of the same files merge into
+   them. For a clean screen, run `make demo` first, then `make demo-reset` and `make stack`.
 
 ## Questions to type
 
@@ -46,11 +46,14 @@ The same questions `make demo` asks, so they are known to work:
 
 ## Browser walk-through
 
+Start from a clean list: `make demo` indexes the same files, so after it every upload in step 1
+just merges into an existing document. Run `make demo-reset`, then `GROQ_API_KEY="$GROQ" make stack`.
+
 | # | Do | Expect |
 |---|---|---|
 | 1 | Upload `evals/corpus/kubernetes-pods.md`, `evals/corpus/rust-ownership.md` and `demo/pucho-demo.pdf` | Each row: Uploading with a percentage, then Processing with a timer, then Indexed. The status region announces "… is indexed." |
 | 2 | Upload a copy of `rust-ownership.md` under another name | After a few seconds the row folds into the original, which flashes, and a toast says it is already uploaded under the original name. |
-| 3 | Upload any `.png` | No row; the error under the upload button says the type isn't supported. |
+| 3 | Drag any `.png` onto the drop zone (the file picker hides other types) | No row; the error under the upload button says the type isn't supported. |
 | 4 | With nothing selected, ask the "everything" question | "Searching documents…", then Sources (rank 1 outlined), then the answer streams with amber [n] pills; Done shows the source count and time. Hover a pill: its source lights up. |
 | 5 | Select only the PDF, ask the PDF question | The scope line says "Searching 1 document"; every source is the PDF. |
 | 6 | Ask the "nothing relevant" question | A calm grey card, no sources, no red. |
