@@ -493,8 +493,17 @@ func TestDeployConfigsLoad(t *testing.T) {
 			if cfg.Minio.PublicURL != wantPublic {
 				t.Errorf("minio.public_url = %q; want %q", cfg.Minio.PublicURL, wantPublic)
 			}
-			if cfg.Go.Documents.MaxEntries != 500 || cfg.Go.UI.StaticDir != "" {
-				t.Errorf("go.documents.max_entries/go.ui.static_dir = %d/%q; want 500/\"\"", cfg.Go.Documents.MaxEntries, cfg.Go.UI.StaticDir)
+			if cfg.Go.Documents.MaxEntries != 500 {
+				t.Errorf("go.documents.max_entries = %d; want 500", cfg.Go.Documents.MaxEntries)
+			}
+			// The center image serves the UI from /srv/web (Dockerfile ui-build stage); the faults
+			// runs have no UI to check.
+			wantStatic := ""
+			if name == "config.compose.toml" || name == "config.e2e.toml" {
+				wantStatic = "/srv/web"
+			}
+			if cfg.Go.UI.StaticDir != wantStatic {
+				t.Errorf("go.ui.static_dir = %q; want %q", cfg.Go.UI.StaticDir, wantStatic)
 			}
 			if cfg.Ingestion.MaxAttempts != 3 {
 				t.Errorf("max_attempts = %d, the PRD acceptance checks assume 3", cfg.Ingestion.MaxAttempts)
