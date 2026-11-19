@@ -1,4 +1,4 @@
-.PHONY: grpc-generate run_migrations run_worker run_server reset_index eval test test-integration e2e e2e-faults up stack down demo go_migrate go_migrate_down
+.PHONY: grpc-generate run_migrations run_worker run_server reset_index eval test test-integration e2e e2e-faults up stack down demo demo-reset go_migrate go_migrate_down
 
 # gRPC
 # Go stubs: buf and both protoc plugins are pinned in services/center/tools/go.mod (a separate
@@ -92,3 +92,7 @@ down:
 # Scripted demo against the running stack (start it with GROQ_API_KEY="$$GROQ" make stack).
 demo:
 	bash scripts/demo.sh
+
+# Deletes this checkout's stack data (volumes and data folders) after a typed "reset".
+demo-reset:
+	bash scripts/demo-reset.sh
