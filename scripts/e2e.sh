@@ -42,6 +42,7 @@ SCENARIOS=(
   "failed-permanent ask_short_circuit"
   "indexed ask_unavailable"
   "indexed documents_list"
+  "indexed ui_served"
 )
 # crash and hang must restart the consumer container exactly this many times: 3 starts die, the
 # 4th reports the poison entry and keeps running.

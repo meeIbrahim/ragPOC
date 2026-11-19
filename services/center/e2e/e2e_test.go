@@ -31,6 +31,7 @@ func TestPhase0(t *testing.T) {
 	t.Run("ask_short_circuit", testAskShortCircuit)
 	t.Run("ask_unavailable", testAskUnavailable)
 	t.Run("documents_list", testDocumentsList)
+	t.Run("ui_served", testUIServed)
 }
 
 // stub mode: indexed
