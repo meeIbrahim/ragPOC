@@ -1,0 +1,12 @@
+.error {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-1);
+  margin-top: var(--space-2);
+  font: var(--text-sm);
+  color: var(--color-error);
+}
+
+.error svg {
+  margin-top: var(--space-1);
+}
