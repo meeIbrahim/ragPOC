@@ -1,0 +1,86 @@
+/* Design tokens: .planning/design/system/tokens.md. Every color, size, radius, shadow and
+   duration used in the UI comes from here; a test rejects hex and px values elsewhere. */
+:root {
+  color-scheme: dark;
+
+  --color-bg: #0E1013;
+  --color-surface: #16191E;
+  --color-surface-raised: #1F232A;
+  --color-border: #2B3039;
+  --color-border-control: #6B7380;
+
+  --color-text: #ECEEF1;
+  --color-text-secondary: #A9B0BB;
+  --color-text-muted: #858D99;
+
+  --color-primary: #ECEEF1;
+  --color-primary-hover: #D3D8DF;
+  --color-on-primary: #0E1013;
+  --color-accent: #F2B544;
+  --color-on-accent: #0E1013;
+
+  --color-success: #5CC38E;
+  --color-info: #7EA9E6;
+  --color-error: #F2786D;
+  --color-success-tint: rgba(92, 195, 142, 0.14);
+  --color-info-tint: rgba(126, 169, 230, 0.14);
+  --color-error-tint: rgba(242, 120, 109, 0.14);
+
+  --font-sans: 'IBM Plex Sans', system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+
+  /* font shorthand: weight size/line-height family */
+  --text-h1: 600 22px/1.3 var(--font-sans);
+  --text-h2: 600 16px/1.4 var(--font-sans);
+  --text-body: 400 15px/1.6 var(--font-sans);
+  --text-body-strong: 500 15px/1.6 var(--font-sans);
+  --text-sm: 400 13px/1.5 var(--font-sans);
+  --text-caption: 500 12px/1.4 var(--font-sans);
+  --text-caption-mono: 500 12px/1.4 var(--font-mono);
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+
+  --radius-badge: 4px;
+  --radius-control: 6px;
+  --radius-card: 8px;
+  --radius-panel: 10px;
+
+  --shadow-none: none;
+  --shadow-float: 0 8px 24px rgba(0, 0, 0, 0.5), 0 0 0 1px #2B3039;
+  --focus-ring: 0 0 0 2px #0E1013, 0 0 0 4px #F2B544;
+
+  --duration-fast: 120ms;
+  --duration-base: 200ms;
+  --ease-out: cubic-bezier(0.2, 0, 0, 1);
+  --duration-stagger: 40ms;
+  --duration-caret: 1s;
+  --duration-skeleton: 1.5s;
+  --motion-offset: 4px;
+  --skeleton-opacity-min: 0.5;
+  --toast-timeout: 5s;
+
+  --size-header: 64px;
+  --size-row: 44px;
+  --size-control: 32px;
+  --bar-selected: 3px;
+  --border-dragover: 2px;
+  --size-docs-panel: 360px;
+  --size-answer-max: 760px;
+  --size-app-min: 1280px;
+  /* icon size equals the caption line box, so icons sit on the text line */
+  --size-icon: 14px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-fast: 0ms;
+    --duration-base: 0ms;
+    --duration-stagger: 0ms;
+  }
+}
