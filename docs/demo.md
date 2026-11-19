@@ -79,3 +79,8 @@ MinIO's CORS allows both `:8080` and `:5173`, so uploads work from either.
 | 2026-11-19 | `make demo` with Ollama stopped | FAIL at the Ollama pre-flight, before any upload |
 | 2026-11-19 | CORS preflight from `:5173` and `:8080` to MinIO | Allowed, each origin echoed |
 | 2026-11-19 | PDF question over all documents with `jekyll-and-hyde.txt` indexed | PDF ranked first (0.624; the book's best chunk 0.444) |
+| 2026-11-19 | Browser walk-through (owner), step 1: uploads index | Pass |
+| 2026-11-19 | Step 2: duplicate merges | Toast correct; the row flash was too faint to see. Fixed (`ce2a33b`: held fill and outline, then a 1 s fade) |
+| 2026-11-19 | Step 3: `.png` | The file picker hides it (by design, `accept`); dragged onto the drop zone it gives the red error, no row. Runbook step updated |
+| 2026-11-19 | Steps 4 and 7: ask, stream, Stop (early check, Vite on `:5173`) | Pass; Stop cancels the gRPC call (rag-server: "the client went away") |
+| 2026-11-19 | Step 8: bad Groq key | "The answer service is unavailable." with "Try again"; Groq 401, center outcome `UNAVAILABLE` |
