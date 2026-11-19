@@ -1,5 +1,11 @@
 .PHONY: grpc-generate run_migrations run_worker run_server reset_index eval test test-integration e2e e2e-faults up stack down demo demo-reset go_migrate go_migrate_down
 
+# Compose project of this checkout: compose's own default (the folder name, normalized), set
+# explicitly so `make down` always matches what `make stack` started, and demo-reset only ever
+# touches this checkout's volumes and data folders. The e2e scripts pass their own -p.
+COMPOSE_PROJECT_NAME ?= $(shell basename "$(CURDIR)" | tr 'A-Z' 'a-z' | tr -cd 'a-z0-9_-' | sed 's/^[^a-z0-9]*//')
+export COMPOSE_PROJECT_NAME
+
 # gRPC
 # Go stubs: buf and both protoc plugins are pinned in services/center/tools/go.mod (a separate
 # module, so the service image never downloads them) and run through `go tool`.
@@ -40,9 +46,12 @@ reset_index:
 eval:
 	cd services/rag-service && uv run python ../../evals/run_eval.py $(ARGS)
 
+# The web suite reinstalls only when the lockfile is newer than the last install; the build is
+# the type check.
 test:
 	cd services/center && go test -race ./...
 	cd services/rag-service && uv run pytest
+	cd services/web && { { [ -f node_modules/.package-lock.json ] && [ ! package-lock.json -nt node_modules/.package-lock.json ]; } || npm ci --ignore-scripts; } && npm test && npm run build
 
 # Tests against the dev infra (`make up`: Redis and Qdrant on localhost; `make run_server` for
 # the rag.server test, which makes no Groq call). Each test skips when its service is not
@@ -80,13 +89,16 @@ go_migrate_down:
 
 # Infrastructure only (MinIO, Qdrant, Redis): the host dev loop runs the API and the worker itself.
 up:
+	@echo "compose project: $(COMPOSE_PROJECT_NAME)"
 	docker compose up -d
 
 # The whole system in containers.
 stack:
+	@echo "compose project: $(COMPOSE_PROJECT_NAME)"
 	docker compose --profile app up -d --build
 
 down:
+	@echo "compose project: $(COMPOSE_PROJECT_NAME)"
 	docker compose --profile app down
 
 # Scripted demo against the running stack (start it with GROQ_API_KEY="$$GROQ" make stack).
