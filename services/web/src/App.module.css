@@ -1,0 +1,43 @@
+.app {
+  display: flex;
+  flex-direction: column;
+  min-width: var(--size-app-min);
+  height: 100vh;
+}
+
+.header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-8);
+  min-height: var(--size-header);
+  padding: var(--space-4) var(--space-8) 0;
+}
+
+.title {
+  font: var(--text-h1);
+}
+
+.subtitle {
+  font: var(--text-sm);
+  color: var(--color-text-secondary);
+}
+
+.note {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  font: var(--text-caption);
+  color: var(--color-text-muted);
+}
+
+.main {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: var(--size-docs-panel) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  gap: var(--space-8);
+  padding: var(--space-8);
+}

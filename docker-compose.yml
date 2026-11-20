@@ -12,6 +12,12 @@
 # No container_name is set, so several projects (this one and the e2e one) can run side by side.
 # Published ports are bound to loopback: Redis has no password.
 
+x-center-build: &center-build
+  context: ./services/center
+  target: runtime
+  additional_contexts:
+    web: ./services/web
+
 services:
   minio:
     # Pinned (tag and digest) so the e2e gate is reproducible. Bump deliberately.
@@ -22,7 +28,7 @@ services:
     environment:
       MINIO_ROOT_USER: minio_user
       MINIO_ROOT_PASSWORD: minio_password
-      MINIO_API_CORS_ALLOW_ORIGIN: http://localhost:8080
+      MINIO_API_CORS_ALLOW_ORIGIN: http://localhost:8080,http://localhost:5173
     volumes:
       - ./ingestion_docs/data:/data
     command: server /data --console-address ":9001"
@@ -62,9 +68,7 @@ services:
   center-migrate:
     profiles: ["app"]
     image: ragpoc-center:${IMAGE_TAG:-dev}
-    build:
-      context: ./services/center
-      target: runtime
+    build: *center-build
     entrypoint: ["migrate"]
     command: ["-config=/config/config.toml"]
     volumes:
@@ -93,9 +97,7 @@ services:
   center:
     profiles: ["app"]
     image: ragpoc-center:${IMAGE_TAG:-dev}
-    build:
-      context: ./services/center
-      target: runtime
+    build: *center-build
     ports:
       - "127.0.0.1:8080:8080"
     volumes:

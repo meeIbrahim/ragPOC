@@ -4,8 +4,6 @@ package config
 import (
 	"fmt"
 	"net/url"
-	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -175,7 +173,8 @@ type DocumentsConfig struct {
 
 type UIConfig struct {
 	// StaticDir is the built web UI, served at /. Empty means no UI is served. A relative path
-	// resolves against the process's working directory, not the config file's.
+	// resolves against the process's working directory, not the config file's. Load does not
+	// stat it: the API checks the folder at startup (webui.CheckDir).
 	StaticDir string `toml:"static_dir"`
 }
 
@@ -276,9 +275,6 @@ func (c *Config) Validate() error {
 	}
 	if c.Go.Documents.MaxEntries < 1 {
 		add("go.documents.max_entries must be >= 1")
-	}
-	if err := checkStaticDir(c.Go.UI.StaticDir); err != nil {
-		add("go.ui.static_dir %v", err)
 	}
 	if c.Go.Ask.Deadline <= 0 {
 		add("go.ask.deadline must be > 0")
@@ -419,28 +415,6 @@ func checkPublicURL(raw string) error {
 		return fmt.Errorf("%q must not have a path", shown)
 	case u.RawQuery != "" || u.ForceQuery || u.Fragment != "":
 		return fmt.Errorf("%q must not have a query or fragment", shown)
-	}
-	return nil
-}
-
-// checkStaticDir accepts "" (no UI) or a directory holding index.html.
-func checkStaticDir(dir string) error {
-	if dir == "" {
-		return nil
-	}
-	info, err := os.Stat(dir)
-	if err != nil {
-		return fmt.Errorf("%q must be an existing directory: %v", dir, err)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("%q must be a directory", dir)
-	}
-	index, err := os.Stat(filepath.Join(dir, "index.html"))
-	if err != nil {
-		return fmt.Errorf("%q must contain index.html: %v", dir, err)
-	}
-	if !index.Mode().IsRegular() {
-		return fmt.Errorf("%q: index.html must be a regular file", dir)
 	}
 	return nil
 }

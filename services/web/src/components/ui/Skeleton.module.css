@@ -1,0 +1,18 @@
+.skeleton {
+  min-height: var(--size-row);
+  border-radius: var(--radius-card);
+  background: var(--color-surface-raised);
+  animation: pulse var(--duration-skeleton) ease-in-out infinite;
+}
+
+@keyframes pulse {
+  50% {
+    opacity: var(--skeleton-opacity-min);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton {
+    animation: none;
+  }
+}

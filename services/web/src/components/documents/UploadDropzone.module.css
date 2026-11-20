@@ -1,0 +1,19 @@
+.zone {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px dashed var(--color-border-control);
+  border-radius: var(--radius-card);
+  transition: background-color var(--duration-fast) var(--ease-out);
+}
+
+.over {
+  border: var(--border-dragover) solid var(--color-text);
+  background: var(--color-surface-raised);
+}
+
+.helper {
+  font: var(--text-sm);
+  color: var(--color-text-muted);
+}

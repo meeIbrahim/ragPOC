@@ -2,6 +2,7 @@
 
 Date: 2026-10-14. Status: APPROVED rev 3 (rev 2 owner sign-off 2026-10-14 with review decisions applied; rev 3 sign-off 2026-11-12). Branch at writing: `rough` (`8d3762f`).
 Rev 3 (2026-11-12, APPROVED, owner sign-off 2026-11-12): Phase 3 rewritten as the backend a web UI needs, Phase 4 (web UI) added. Source: epic `.planning/epics/phase-3-query-and-ui.md`.
+Rev 3.1 (2026-11-20, owner-approved): Phase 4 as-built notes (product name, demo commands, plain-text answers). No requirement changed.
 Audience: the owner and the coding agents that implement it. Not client-facing.
 
 Relationship to other docs: `.claude/doc/rag-poc-design.md` is the as-built snapshot (state machines, tables, tests list). This PRD is the forward spec. Where they differ, **this PRD wins**. Section 9 lists the corrections to the design doc. The owner moves this file to a tracked `docs/` path once final; until then agents must run in the main checkout (worktrees do not see `.claude/`).
@@ -381,6 +382,13 @@ Done when:
 - Ask across all documents and across a selection; sources appear before the answer, which streams in; a question with nothing relevant shows a clear empty answer.
 - With Groq unreachable, the UI shows a retry state, not a broken page.
 - The demo script runs end to end without errors. Demos use public or synthetic documents only: questions and retrieved chunks go to Groq.
+
+As built (2026-11-20):
+- Product name: **Pucho** (Urdu پوچھو, "ask").
+- `GROQ_API_KEY="$GROQ" make stack` serves the UI at http://localhost:8080: the center image's `ui-build` stage puts the SPA in `/srv/web`, and the compose and e2e configs set `[go.ui].static_dir="/srv/web"`.
+- `make demo` runs the scripted demo (`scripts/demo.sh`: pre-flight, then 6 steps). `make demo-reset` deletes this checkout's stack data after a typed `reset`, the only way to clear FAILED rows (B1, B3). Presenter runbook: `docs/demo.md`.
+- `[rag].system_prompt` asks for plain text; the UI keeps line breaks and never renders markdown.
+- MinIO CORS allows `:8080` and `:5173`, so uploads also work from the Vite dev server.
 
 ---
 

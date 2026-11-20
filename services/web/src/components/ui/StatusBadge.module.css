@@ -1,0 +1,30 @@
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 0 var(--space-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-badge);
+  font: var(--text-caption);
+  transition: background-color var(--duration-base) var(--ease-out), color var(--duration-base) var(--ease-out);
+}
+
+.queued {
+  border-color: var(--color-info);
+  color: var(--color-info);
+}
+
+.info {
+  background: var(--color-info-tint);
+  color: var(--color-info);
+}
+
+.success {
+  background: var(--color-success-tint);
+  color: var(--color-success);
+}
+
+.error {
+  background: var(--color-error-tint);
+  color: var(--color-error);
+}

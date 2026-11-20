@@ -1,0 +1,26 @@
+.icon {
+  width: var(--size-icon);
+  height: var(--size-icon);
+  flex: none;
+  vertical-align: middle;
+}
+
+.chevron,
+.open {
+  transition: transform var(--duration-fast) var(--ease-out);
+}
+
+.open {
+  transform: rotate(90deg);
+}
+
+/* Spinners keep turning under reduced motion: they carry state (design 6). */
+.spin {
+  animation: spin var(--duration-caret) linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

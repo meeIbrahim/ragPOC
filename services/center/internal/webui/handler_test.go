@@ -131,3 +131,39 @@ func TestTraversalStaysInsideTheSite(t *testing.T) {
 		}
 	}
 }
+
+// compose-demo D5: the API checks static_dir at startup, so a typo or an image built without the
+// UI fails before any worker runs instead of serving 404s.
+func TestCheckDir(t *testing.T) {
+	valid := site(t)
+	indexDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(indexDir, "index.html"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name    string
+		dir     string
+		wantErr string // "" means accepted
+	}{
+		{"empty means no UI", "", ""},
+		{"directory with index.html", valid, ""},
+		{"missing directory", filepath.Join(valid, "nope"), "must be an existing directory"},
+		{"a file, not a directory", filepath.Join(valid, "index.html"), "must be a directory"},
+		{"directory without index.html", t.TempDir(), "must contain index.html"},
+		{"index.html is a directory", indexDir, "index.html must be a regular file"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := CheckDir(tc.dir)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("CheckDir(%q) = %v; want it accepted", tc.dir, err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) || !strings.Contains(err.Error(), tc.dir) {
+				t.Fatalf("CheckDir(%q) = %v; want an error naming the dir and %q", tc.dir, err, tc.wantErr)
+			}
+		})
+	}
+}

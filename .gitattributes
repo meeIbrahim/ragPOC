@@ -2,3 +2,5 @@
 contracts/** -text
 # Eval corpus files are hashed byte for byte (questions.jsonl expected_hash); never rewrite line endings.
 evals/corpus/** -text
+# The demo PDF is compared byte for byte with its generator output; never rewrite it.
+demo/*.pdf binary

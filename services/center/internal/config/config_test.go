@@ -320,41 +320,23 @@ func TestPublicURLAcceptedForms(t *testing.T) {
 	}
 }
 
-// F5 A4: static_dir is optional; when set it must be a directory holding index.html, so a typo
-// fails at startup instead of serving 404s.
-func TestStaticDir(t *testing.T) {
-	withIndex := t.TempDir()
-	if err := os.WriteFile(filepath.Join(withIndex, "index.html"), []byte("<html></html>"), 0o600); err != nil {
-		t.Fatal(err)
+// compose-demo D5: Load never touches the file system for static_dir. The API checks the folder
+// at startup (webui.CheckDir), so the tests and tools that load deploy configs on a host without
+// the built UI still work.
+func TestStaticDirIsNotStatted(t *testing.T) {
+	for _, dir := range []string{"", "/no/such/dir", "/srv/web"} {
+		body := strings.Replace(validTOML, "[go.ui]\nstatic_dir=\"\"", "[go.ui]\nstatic_dir=\""+dir+"\"", 1)
+		cfg, err := Load(writeConfig(t, body))
+		if err != nil {
+			t.Fatalf("static_dir=%q: err = %v; want the config accepted without a folder check", dir, err)
+		}
+		if cfg.Go.UI.StaticDir != dir {
+			t.Errorf("static_dir = %q; want %q", cfg.Go.UI.StaticDir, dir)
+		}
 	}
-	notADir := filepath.Join(withIndex, "index.html")
-	tests := []struct {
-		name    string
-		section string // the [go.ui] table, or "" to leave it out
-		wantErr bool
-	}{
-		{"absent", "", false},
-		{"empty", `static_dir=""`, false},
-		{"directory with index.html", `static_dir="` + withIndex + `"`, false},
-		{"missing directory", `static_dir="` + filepath.Join(withIndex, "nope") + `"`, true},
-		{"directory without index.html", `static_dir="` + t.TempDir() + `"`, true},
-		{"a file, not a directory", `static_dir="` + notADir + `"`, true},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			table := ""
-			if tc.section != "" {
-				table = "[go.ui]\n" + tc.section
-			}
-			body := strings.Replace(validTOML, "[go.ui]\nstatic_dir=\"\"", table, 1)
-			_, err := Load(writeConfig(t, body))
-			if tc.wantErr && (err == nil || !strings.Contains(err.Error(), "go.ui.static_dir")) {
-				t.Fatalf("err = %v; want a go.ui.static_dir error", err)
-			}
-			if !tc.wantErr && err != nil {
-				t.Fatalf("err = %v; want the config accepted", err)
-			}
-		})
+	body := strings.Replace(validTOML, "[go.ui]\nstatic_dir=\"\"", "", 1)
+	if _, err := Load(writeConfig(t, body)); err != nil {
+		t.Fatalf("without [go.ui]: err = %v; want static_dir optional", err)
 	}
 }
 
@@ -511,8 +493,17 @@ func TestDeployConfigsLoad(t *testing.T) {
 			if cfg.Minio.PublicURL != wantPublic {
 				t.Errorf("minio.public_url = %q; want %q", cfg.Minio.PublicURL, wantPublic)
 			}
-			if cfg.Go.Documents.MaxEntries != 500 || cfg.Go.UI.StaticDir != "" {
-				t.Errorf("go.documents.max_entries/go.ui.static_dir = %d/%q; want 500/\"\"", cfg.Go.Documents.MaxEntries, cfg.Go.UI.StaticDir)
+			if cfg.Go.Documents.MaxEntries != 500 {
+				t.Errorf("go.documents.max_entries = %d; want 500", cfg.Go.Documents.MaxEntries)
+			}
+			// The center image serves the UI from /srv/web (Dockerfile ui-build stage); the faults
+			// runs have no UI to check.
+			wantStatic := ""
+			if name == "config.compose.toml" || name == "config.e2e.toml" {
+				wantStatic = "/srv/web"
+			}
+			if cfg.Go.UI.StaticDir != wantStatic {
+				t.Errorf("go.ui.static_dir = %q; want %q", cfg.Go.UI.StaticDir, wantStatic)
 			}
 			if cfg.Ingestion.MaxAttempts != 3 {
 				t.Errorf("max_attempts = %d, the PRD acceptance checks assume 3", cfg.Ingestion.MaxAttempts)
